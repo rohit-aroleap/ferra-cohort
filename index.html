@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ferra – Cohort Analyzer v2</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f4f0; color: #1a1a1a; padding: 28px 24px; }
+
+  /* Upload zone */
+  #upload-zone {
+    border: 2px dashed #ccc; border-radius: 14px; background: white;
+    padding: 48px 24px; text-align: center; cursor: pointer;
+    transition: border-color 0.2s, background 0.2s; margin-bottom: 28px;
+  }
+  #upload-zone.drag { border-color: #1D9E75; background: #f0fdf8; }
+  #upload-zone.loaded { border-style: solid; border-color: #1D9E75; background: #f0fdf8; padding: 20px 24px; }
+  #upload-zone h2 { font-size: 16px; font-weight: 600; margin-bottom: 6px; color: #333; }
+  #upload-zone p { font-size: 13px; color: #888; margin-bottom: 16px; }
+  #upload-zone .status { font-size: 13px; color: #1D9E75; font-weight: 500; margin-top: 8px; }
+  #upload-zone .error { font-size: 13px; color: #c0392b; font-weight: 500; margin-top: 8px; }
+  .upload-btn {
+    display: inline-block; padding: 8px 20px; border-radius: 8px;
+    border: 1px solid #ccc; background: white; font-size: 13px;
+    color: #333; cursor: pointer; transition: background 0.15s;
+  }
+  .upload-btn:hover { background: #f5f5f5; }
+  #file-input { display: none; }
+
+  /* Header */
+  .header { margin-bottom: 24px; }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header .meta { font-size: 13px; color: #888; margin-top: 3px; }
+
+  /* Sections */
+  .section { background: white; border-radius: 14px; border: 1px solid #e5e3df; padding: 22px 20px 16px; margin-bottom: 24px; }
+  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .section-sub { font-size: 12px; color: #888; margin-bottom: 14px; }
+
+  /* Legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .leg-btn {
+    display: flex; align-items: center; gap: 6px; padding: 4px 11px;
+    border-radius: 6px; border: 1px solid #ddd; background: white;
+    font-size: 12px; cursor: pointer; transition: opacity 0.15s; user-select: none;
+  }
+  .leg-btn.off { opacity: 0.3; }
+  .leg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  .chart-scroll { overflow-x: auto; }
+  canvas { display: block; }
+
+  /* Tooltip */
+  #tooltip {
+    position: fixed; background: white; border: 1px solid #ccc;
+    border-radius: 8px; padding: 8px 12px; font-size: 12px; line-height: 1.7;
+    pointer-events: none; display: none; z-index: 100;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.13); max-width: 220px;
+  }
+
+  #charts { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Upload Zone -->
+<div id="upload-zone" onclick="document.getElementById('file-input').click()"
+     ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
+  <h2>Ferra Cohort Analyzer <span style="font-size:12px;font-weight:400;color:#aaa">v2</span></h2>
+  <p>Upload your users CSV to generate cohort charts.<br>Works with any export from the same format.</p>
+  <label class="upload-btn" onclick="event.stopPropagation(); document.getElementById('file-input').click()">
+    Choose CSV file
+  </label>
+  <input type="file" id="file-input" accept=".csv" onchange="handleFile(this.files[0])">
+  <div id="upload-status"></div>
+</div>
+
+<!-- Charts (hidden until CSV loaded) -->
+<div id="charts">
+  <div class="header">
+    <h1>Cohort Analysis</h1>
+    <div class="meta" id="meta-line"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Segment distribution by join cohort</div>
+    <div class="section-sub">100% stacked bars — each bar shows % of users in each segment. Hover for exact numbers.</div>
+    <div class="legend" id="legend1"></div>
+    <div class="chart-scroll"><canvas id="stackChart"></canvas></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Individual habit scores by join cohort</div>
+    <div class="section-sub">Each dot = one user plotted at their exact habit score. Hover for details.</div>
+    <div class="legend" id="legend2"></div>
+    <div class="chart-scroll"><canvas id="stripChart"></canvas></div>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+const SEG_COLORS = { Thriving:'#1D9E75', Coasting:'#378ADD', Building:'#c07800', Drifting:'#D4537E', Dormant:'#aaa' };
+const SEGS = ['Thriving','Coasting','Building','Drifting','Dormant'];
+const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function monthLabel(m) {
+  const [yr, mo] = m.split('-');
+  return MONTH_NAMES[+mo] + " '" + yr.slice(2);
+}
+
+// ─── CSV parsing ─────────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+  return lines.slice(1).map(line => {
+    // Handle quoted fields
+    const vals = [];
+    let cur = '', inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === ',' && !inQ) { vals.push(cur.trim()); cur = ''; }
+      else { cur += ch; }
+    }
+    vals.push(cur.trim());
+    const row = {};
+    headers.forEach((h, i) => row[h] = vals[i] !== undefined ? vals[i] : '');
+    return row;
+  }).filter(r => Object.values(r).some(v => v !== ''));
+}
+
+function detectColumns(headers) {
+  // Try exact match first, then partial — prevents loose matchers like 'days'
+  // from picking up 'Days Since Last Session' before 'Member Since (days)'
+  const find = (...candidates) => {
+    for (const c of candidates) {
+      const m = headers.find(h => h.toLowerCase() === c.toLowerCase());
+      if (m) return m;
+    }
+    for (const c of candidates) {
+      const m = headers.find(h => h.toLowerCase().includes(c.toLowerCase()));
+      if (m) return m;
+    }
+    return null;
+  };
+  return {
+    name:        find('Name', 'user name', 'username'),
+    habitScore:  find('Habit Score', 'habit_score', 'habitscore'),
+    segment:     find('Segment'),
+    memberSince: find('Member Since (days)', 'Member Since', 'member_since', 'tenure'),
+    lastActive:  find('Last Active', 'last_active'),
+  };
+}
+
+function processData(rows, cols, uploadDate) {
+  const today = uploadDate || new Date();
+
+  const userData = {};
+  const cohortData = {};
+
+  rows.forEach(row => {
+    const name = row[cols.name] || 'Unknown';
+    const score = parseFloat(row[cols.habitScore]);
+    const segment = row[cols.segment];
+    const memberDays = parseInt(row[cols.memberSince]);
+
+    if (isNaN(score) || !segment || isNaN(memberDays)) return;
+
+    // Compute join date → join month
+    // IMPORTANT: create a fresh Date object per user — never mutate a shared instance
+    const base = today instanceof Date ? today : new Date(today);
+    const joinDate = new Date(base.getFullYear(), base.getMonth(), base.getDate() - memberDays);
+    const joinMonth = joinDate.getFullYear() + '-' + String(joinDate.getMonth() + 1).padStart(2, '0');
+
+    if (!userData[joinMonth]) userData[joinMonth] = [];
+    userData[joinMonth].push({ name, score, segment });
+
+    if (!cohortData[joinMonth]) {
+      cohortData[joinMonth] = { n: 0, counts: Object.fromEntries(SEGS.map(s => [s, 0])), pcts: {} };
+    }
+    cohortData[joinMonth].n++;
+    if (cohortData[joinMonth].counts[segment] !== undefined) cohortData[joinMonth].counts[segment]++;
+  });
+
+  // Compute pcts
+  Object.keys(cohortData).forEach(m => {
+    const cd = cohortData[m];
+    SEGS.forEach(s => cd.pcts[s] = cd.n ? Math.round(cd.counts[s] / cd.n * 1000) / 10 : 0);
+  });
+
+  return { userData, cohortData };
+}
+
+// ─── File handling ────────────────────────────────────────────────────────────
+function handleDragOver(e) { e.preventDefault(); document.getElementById('upload-zone').classList.add('drag'); }
+function handleDragLeave(e) { document.getElementById('upload-zone').classList.remove('drag'); }
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('upload-zone').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+}
+
+function handleFile(file) {
+  if (!file || !file.name.endsWith('.csv')) {
+    showError('Please upload a .csv file.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const text = e.target.result;
+      const rows = parseCSV(text);
+      if (!rows.length) { showError('CSV appears to be empty.'); return; }
+
+      const cols = detectColumns(Object.keys(rows[0]));
+      const missing = Object.entries(cols).filter(([k, v]) => !v).map(([k]) => k);
+      if (missing.length > 2) {
+        showError(`Could not find columns: ${missing.join(', ')}. Check that your CSV has Habit Score, Segment, Member Since (days), and Name columns.`);
+        return;
+      }
+
+      // Try to detect upload date from filename (e.g. ferra-users-2026-04-11.csv)
+      // Parse components directly to avoid timezone shifting
+      let uploadDate = new Date();
+      const dateMatch = file.name.match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (dateMatch) {
+        uploadDate = new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]);
+      }
+
+      const { userData, cohortData } = processData(rows, cols, uploadDate);
+      const totalUsers = rows.length;
+
+      // Build full month range including empty months (so gaps show as blank columns)
+      const dataMonths = Object.keys(cohortData).sort();
+      const months = [];
+      if (dataMonths.length > 0) {
+        let [sy, sm] = dataMonths[0].split('-').map(Number);
+        const [ey, em] = dataMonths[dataMonths.length - 1].split('-').map(Number);
+        while (sy < ey || (sy === ey && sm <= em)) {
+          months.push(sy + '-' + String(sm).padStart(2, '0'));
+          sm++;
+          if (sm > 12) { sm = 1; sy++; }
+        }
+      }
+
+      // Update upload zone
+      const zone = document.getElementById('upload-zone');
+      zone.classList.add('loaded');
+      zone.classList.remove('drag');
+      document.getElementById('upload-status').innerHTML =
+        `<span class="status">✓ Loaded: ${file.name} &nbsp;·&nbsp; ${totalUsers} users &nbsp;·&nbsp; ${months.length} cohorts</span>
+         <br><span style="font-size:12px;color:#aaa;margin-top:4px;display:block">Drop or click to load a different file</span>`;
+
+      // Meta line
+      document.getElementById('meta-line').textContent =
+        `${totalUsers} users · ${months.length} cohorts · File: ${file.name}`;
+
+      document.getElementById('charts').style.display = 'block';
+      renderAll(userData, cohortData, months);
+
+    } catch (err) {
+      showError('Failed to parse CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function showError(msg) {
+  document.getElementById('upload-status').innerHTML = `<span class="error">✗ ${msg}</span>`;
+}
+
+// ─── Rendering ────────────────────────────────────────────────────────────────
+const tooltip = document.getElementById('tooltip');
+
+function renderAll(userData, cohortData, months) {
+  renderStackChart(cohortData, months);
+  renderStripChart(userData, months);
+}
+
+function buildLegend(elId, activeSegs, onToggle) {
+  const el = document.getElementById(elId);
+  el.innerHTML = '';
+  SEGS.forEach(seg => {
+    const btn = document.createElement('button');
+    btn.className = 'leg-btn';
+    btn.dataset.seg = seg;
+    btn.innerHTML = `<span class="leg-dot" style="background:${SEG_COLORS[seg]}"></span>${seg}`;
+    btn.onclick = () => {
+      if (activeSegs.has(seg)) {
+        if (activeSegs.size === 1) return;
+        activeSegs.delete(seg); btn.classList.add('off');
+      } else {
+        activeSegs.add(seg); btn.classList.remove('off');
+      }
+      onToggle();
+    };
+    el.appendChild(btn);
+  });
+}
+
+// ─── Chart 1: Stacked 100% bar ───────────────────────────────────────────────
+function renderStackChart(cohortData, months) {
+  const BAR_W = 36, GAP = 22, ML = 44, MT = 16, MB = 56, CH = 280;
+  const totalW = ML + months.length * (BAR_W + GAP) + 20;
+  const totalH = CH + MT + MB;
+
+  const canvas = document.getElementById('stackChart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = totalW; canvas.height = totalH;
+  canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
+
+  const activeSegs = new Set(SEGS);
+  let hitZones = [];
+
+  function draw() {
+    ctx.clearRect(0, 0, totalW, totalH);
+    hitZones = [];
+
+    // Gridlines + Y labels
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    [0, 25, 50, 75, 100].forEach(v => {
+      const y = MT + CH * (1 - v / 100);
+      ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - 8, y); ctx.stroke();
+      ctx.fillStyle = '#999'; ctx.fillText(v + '%', ML - 8, y + 4);
+    });
+
+    months.forEach((month, mi) => {
+      const x = ML + mi * (BAR_W + GAP);
+      const cd = cohortData[month];
+
+      // X label rotated
+      ctx.save();
+      ctx.translate(x + BAR_W / 2, MT + CH + 10);
+      ctx.rotate(Math.PI / 4);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = cd ? '#888' : '#ccc';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.fillText(monthLabel(month), 0, 0);
+      ctx.restore();
+
+      if (!cd) {
+        // Empty month — draw a faint placeholder bar and n=0
+        ctx.fillStyle = 'rgba(0,0,0,0.04)';
+        ctx.fillRect(x, MT, BAR_W, CH);
+        ctx.textAlign = 'center'; ctx.fillStyle = '#ccc';
+        ctx.font = '10px -apple-system, sans-serif';
+        ctx.fillText('n=0', x + BAR_W / 2, MT + CH + 48);
+        ctx.fillStyle = '#ddd';
+        ctx.font = '12px -apple-system, sans-serif';
+        ctx.fillText('—', x + BAR_W / 2, MT + CH / 2 + 4);
+        return;
+      }
+
+      const activeSorted = SEGS.filter(s => activeSegs.has(s));
+      const total = activeSorted.reduce((sum, s) => sum + cd.counts[s], 0);
+      if (!total) return;
+
+      let yOff = MT + CH;
+      activeSorted.forEach(seg => {
+        const count = cd.counts[seg] || 0;
+        if (!count) return;
+        const pct = count / total * 100;
+        const barH = CH * pct / 100;
+        const y = yOff - barH;
+
+        ctx.fillStyle = SEG_COLORS[seg];
+        ctx.fillRect(x, y, BAR_W, barH);
+
+        if (barH > 18) {
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 10px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(Math.round(pct) + '%', x + BAR_W / 2, y + barH / 2 + 4);
+        }
+
+        hitZones.push({ x, y, w: BAR_W, h: barH, seg, count, pct: pct.toFixed(1), month, total: cd.n });
+        yOff -= barH;
+      });
+
+      // n= label
+      ctx.textAlign = 'center'; ctx.fillStyle = '#bbb';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.fillText('n=' + cd.n, x + BAR_W / 2, MT + CH + 48);
+    });
+  }
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const found = hitZones.find(z => mx >= z.x && mx <= z.x + z.w && my >= z.y && my <= z.y + z.h);
+    if (found) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      tooltip.innerHTML = `<strong>${found.seg}</strong> · ${found.month}<br>${found.count} of ${found.total} users<br><strong>${found.pct}%</strong> of cohort`;
+    } else { tooltip.style.display = 'none'; }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+  buildLegend('legend1', activeSegs, draw);
+  draw();
+}
+
+// ─── Chart 2: Strip chart ────────────────────────────────────────────────────
+function renderStripChart(userData, months) {
+  const COL_W = 58, ML = 44, MT = 16, MB = 56, CH = 320, DOT_R = 5.5;
+  const totalW = ML + months.length * COL_W + 20;
+  const totalH = CH + MT + MB;
+
+  const canvas = document.getElementById('stripChart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = totalW; canvas.height = totalH;
+  canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
+
+  const activeSegs = new Set(SEGS);
+  let dots = [];
+
+  function yPos(score) { return MT + (CH - DOT_R) * (1 - score / 100); }
+
+  function draw() {
+    ctx.clearRect(0, 0, totalW, totalH);
+    dots = [];
+
+    // Y axis
+    ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'right';
+    [0, 25, 50, 75, 100].forEach(v => {
+      const y = yPos(v);
+      ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - 8, y); ctx.stroke();
+      ctx.fillStyle = '#999'; ctx.fillText(v, ML - 8, y + 4);
+    });
+
+    ctx.save();
+    ctx.translate(12, MT + CH / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#888';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.fillText('Habit score', 0, 0);
+    ctx.restore();
+
+    months.forEach((month, mi) => {
+      const cx = ML + mi * COL_W + COL_W / 2;
+
+      if (mi > 0) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.06)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(cx - COL_W / 2, MT); ctx.lineTo(cx - COL_W / 2, MT + CH); ctx.stroke();
+      }
+
+      ctx.save();
+      ctx.translate(cx, MT + CH + 10); ctx.rotate(Math.PI / 4);
+      ctx.textAlign = 'left'; ctx.fillStyle = '#888';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.fillText(monthLabel(month), 0, 0);
+      ctx.restore();
+
+      const colUsers = (userData[month] || []).filter(u => activeSegs.has(u.segment));
+      ctx.textAlign = 'center';
+      ctx.font = '10px -apple-system, sans-serif';
+      const hasData = userData[month] && userData[month].length > 0;
+      ctx.fillStyle = hasData ? '#bbb' : '#ddd';
+      ctx.fillText(hasData ? 'n=' + colUsers.length : 'n=0', cx, MT + CH + 48);
+
+      if (!hasData) {
+        // Faint vertical stripe to show the gap
+        ctx.fillStyle = 'rgba(0,0,0,0.03)';
+        ctx.fillRect(cx - COL_W / 2, MT, COL_W, CH);
+        ctx.fillStyle = '#ddd';
+        ctx.font = '12px -apple-system, sans-serif';
+        ctx.fillText('—', cx, MT + CH / 2);
+      }
+
+      const nU = colUsers.length;
+      colUsers.forEach((u, ui) => {
+        const spread = nU > 1 ? ((ui / (nU - 1)) - 0.5) * Math.min(COL_W - 16, nU * 5) : 0;
+        const x = cx + spread, y = yPos(u.score);
+        ctx.beginPath();
+        ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
+        ctx.fillStyle = SEG_COLORS[u.segment] + 'cc'; ctx.fill();
+        ctx.strokeStyle = SEG_COLORS[u.segment]; ctx.lineWidth = 1; ctx.stroke();
+        dots.push({ x, y, ...u, month });
+      });
+    });
+  }
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const found = dots.find(d => (mx - d.x) ** 2 + (my - d.y) ** 2 <= (DOT_R + 3) ** 2);
+    if (found) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      tooltip.innerHTML = `<strong>${found.name}</strong><br>Score: ${found.score}<br>Segment: ${found.segment}<br>Cohort: ${found.month}`;
+      canvas.style.cursor = 'pointer';
+    } else { tooltip.style.display = 'none'; canvas.style.cursor = 'default'; }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+  buildLegend('legend2', activeSegs, draw);
+  draw();
+}
+</script>
+</body>
+</html>
