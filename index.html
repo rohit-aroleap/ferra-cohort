@@ -61,6 +61,16 @@
 
   #charts { display: none; }
 
+  /* At-risk table */
+  .risk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .risk-table th { text-align: left; font-weight: 600; color: #888; font-size: 11px; padding: 4px 10px 8px; border-bottom: 1px solid #e5e3df; }
+  .risk-table td { padding: 7px 10px; border-bottom: 1px solid #f0eeea; }
+  .risk-table tr.at-risk td { background: #fff5f7; }
+  .risk-table tr.at-risk td:first-child { border-left: 3px solid #D4537E; padding-left: 7px; }
+  .risk-flag { font-size: 11px; color: #D4537E; font-weight: 600; margin-left: 6px; }
+  .health-bar { display: inline-block; width: 60px; height: 6px; border-radius: 3px; background: #eee; vertical-align: middle; margin-right: 6px; }
+  .health-bar-fill { height: 100%; border-radius: 3px; }
+
   /* Segment definitions */
   .seg-defs { display: flex; flex-wrap: wrap; gap: 10px; background: white; border-radius: 14px; border: 1px solid #e5e3df; padding: 16px 20px; margin-bottom: 24px; }
   .seg-def { display: flex; align-items: flex-start; gap: 8px; flex: 1 1 160px; min-width: 140px; }
@@ -100,6 +110,18 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Cohort health — average habit score &amp; active rate</div>
+    <div class="section-sub">Line chart: avg habit score (left axis) and % active users — Thriving+Building+Coasting (right axis) — by join cohort.</div>
+    <div class="chart-scroll"><canvas id="healthChart"></canvas></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">At-risk cohorts</div>
+    <div class="section-sub">Cohorts ranked by Drifting + Dormant %. Rows highlighted in pink are above 50% at-risk.</div>
+    <div id="riskTable"></div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Segment distribution by join cohort</div>
     <div class="section-sub">100% stacked bars — each bar shows % of users in each segment. Hover for exact numbers.</div>
     <div class="legend" id="legend1"></div>
@@ -117,7 +139,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.001';
+const VERSION = 'v2.002';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -296,8 +318,159 @@ function showError(msg) {
 const tooltip = document.getElementById('tooltip');
 
 function renderAll(userData, cohortData, months) {
+  renderHealthChart(userData, cohortData, months);
+  renderRiskTable(cohortData, months);
   renderStackChart(cohortData, months);
   renderStripChart(userData, months);
+}
+
+// ─── Chart 3: Health line chart ──────────────────────────────────────────────
+function renderHealthChart(userData, cohortData, months) {
+  const COL_W = 58, ML = 54, MR = 54, MT = 20, MB = 56, CH = 220;
+  const totalW = ML + months.length * COL_W + MR;
+  const totalH = CH + MT + MB;
+
+  const canvas = document.getElementById('healthChart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = totalW; canvas.height = totalH;
+  canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
+
+  // Compute per-cohort stats
+  const stats = months.map(m => {
+    const cd = cohortData[m];
+    if (!cd || !cd.n) return { month: m, avgScore: null, activePct: null };
+    const users = userData[m] || [];
+    const avgScore = users.length ? users.reduce((s, u) => s + u.score, 0) / users.length : null;
+    const active = (cd.counts.Thriving || 0) + (cd.counts.Building || 0) + (cd.counts.Coasting || 0);
+    const activePct = cd.n ? active / cd.n * 100 : null;
+    return { month: m, avgScore, activePct };
+  });
+
+  const xOf = i => ML + i * COL_W + COL_W / 2;
+  const yScore = v => MT + CH * (1 - v / 100);
+  const yActive = v => MT + CH * (1 - v / 100);
+
+  ctx.font = '11px -apple-system, sans-serif';
+
+  // Gridlines + left Y axis (score)
+  [0, 25, 50, 75, 100].forEach(v => {
+    const y = yScore(v);
+    ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - MR + 4, y); ctx.stroke();
+    ctx.fillStyle = '#999'; ctx.textAlign = 'right';
+    ctx.fillText(v, ML - 8, y + 4);
+  });
+
+  // Left axis label
+  ctx.save(); ctx.translate(13, MT + CH / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#1D9E75';
+  ctx.font = '11px -apple-system, sans-serif';
+  ctx.fillText('Avg habit score', 0, 0); ctx.restore();
+
+  // Right axis label
+  ctx.save(); ctx.translate(totalW - 13, MT + CH / 2); ctx.rotate(Math.PI / 2);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#378ADD';
+  ctx.font = '11px -apple-system, sans-serif';
+  ctx.fillText('% active', 0, 0); ctx.restore();
+
+  // Right Y axis ticks
+  ctx.textAlign = 'left';
+  [0, 25, 50, 75, 100].forEach(v => {
+    ctx.fillStyle = '#bbb';
+    ctx.fillText(v + '%', totalW - MR + 8, yActive(v) + 4);
+  });
+
+  // Draw active % line (blue)
+  ctx.strokeStyle = '#378ADD'; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  let started = false;
+  stats.forEach((s, i) => {
+    if (s.activePct === null) { started = false; return; }
+    const x = xOf(i), y = yActive(s.activePct);
+    if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+  });
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // Draw avg score line (green)
+  ctx.strokeStyle = '#1D9E75'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); started = false;
+  stats.forEach((s, i) => {
+    if (s.avgScore === null) { started = false; return; }
+    const x = xOf(i), y = yScore(s.avgScore);
+    if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+  });
+  ctx.stroke();
+
+  // Dots + x labels
+  const hitZones = [];
+  stats.forEach((s, i) => {
+    const x = xOf(i);
+    // X label
+    ctx.save(); ctx.translate(x, MT + CH + 10); ctx.rotate(Math.PI / 4);
+    ctx.textAlign = 'left'; ctx.fillStyle = s.avgScore !== null ? '#888' : '#ccc';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.fillText(monthLabel(s.month), 0, 0); ctx.restore();
+
+    if (s.avgScore !== null) {
+      ctx.beginPath(); ctx.arc(x, yScore(s.avgScore), 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#1D9E75'; ctx.fill();
+      hitZones.push({ x, y: yScore(s.avgScore), ...s });
+    }
+    if (s.activePct !== null) {
+      ctx.beginPath(); ctx.arc(x, yActive(s.activePct), 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#378ADD'; ctx.fill();
+    }
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const found = hitZones.find(z => (mx - z.x) ** 2 + (my - z.y) ** 2 <= 64);
+    if (found) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      tooltip.innerHTML = `<strong>${found.month}</strong><br>Avg score: <strong>${found.avgScore.toFixed(1)}</strong><br>Active: <strong>${found.activePct.toFixed(1)}%</strong>`;
+    } else { tooltip.style.display = 'none'; }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+}
+
+// ─── Table: At-risk cohorts ───────────────────────────────────────────────────
+function renderRiskTable(cohortData, months) {
+  const rows = months
+    .filter(m => cohortData[m] && cohortData[m].n > 0)
+    .map(m => {
+      const cd = cohortData[m];
+      const atRiskPct = ((cd.counts.Drifting || 0) + (cd.counts.Dormant || 0)) / cd.n * 100;
+      const activePct = ((cd.counts.Thriving || 0) + (cd.counts.Building || 0) + (cd.counts.Coasting || 0)) / cd.n * 100;
+      return { month: m, n: cd.n, atRiskPct, activePct, counts: cd.counts };
+    })
+    .sort((a, b) => b.atRiskPct - a.atRiskPct);
+
+  const healthColor = pct => pct >= 70 ? '#1D9E75' : pct >= 40 ? '#c07800' : '#D4537E';
+
+  const html = `<table class="risk-table">
+    <thead><tr>
+      <th>Cohort</th><th>Users</th><th>Active</th><th>Drifting</th><th>Dormant</th><th>At-risk %</th><th>Health</th>
+    </tr></thead>
+    <tbody>
+    ${rows.map(r => `<tr class="${r.atRiskPct > 50 ? 'at-risk' : ''}">
+      <td>${monthLabel(r.month)}${r.atRiskPct > 50 ? '<span class="risk-flag">⚠ high risk</span>' : ''}</td>
+      <td>${r.n}</td>
+      <td>${r.activePct.toFixed(0)}%</td>
+      <td>${r.counts.Drifting || 0}</td>
+      <td>${r.counts.Dormant || 0}</td>
+      <td><strong>${r.atRiskPct.toFixed(1)}%</strong></td>
+      <td>
+        <span class="health-bar"><span class="health-bar-fill" style="width:${r.activePct.toFixed(0)}%;background:${healthColor(r.activePct)}"></span></span>
+        ${r.activePct.toFixed(0)}%
+      </td>
+    </tr>`).join('')}
+    </tbody>
+  </table>`;
+
+  document.getElementById('riskTable').innerHTML = html;
 }
 
 function buildLegend(elId, activeSegs, onToggle) {
