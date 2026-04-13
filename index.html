@@ -60,6 +60,14 @@
   }
 
   #charts { display: none; }
+
+  /* Segment definitions */
+  .seg-defs { display: flex; flex-wrap: wrap; gap: 10px; background: white; border-radius: 14px; border: 1px solid #e5e3df; padding: 16px 20px; margin-bottom: 24px; }
+  .seg-def { display: flex; align-items: flex-start; gap: 8px; flex: 1 1 160px; min-width: 140px; }
+  .seg-def-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+  .seg-def-text { font-size: 12px; line-height: 1.4; }
+  .seg-def-name { font-weight: 600; }
+  .seg-def-desc { color: #888; }
 </style>
 </head>
 <body>
@@ -81,6 +89,14 @@
   <div class="header">
     <h1>Cohort Analysis <span style="font-size:14px;font-weight:400;color:#aaa">v2.1</span></h1>
     <div class="meta" id="meta-line"></div>
+  </div>
+
+  <div class="seg-defs">
+    <div class="seg-def"><span class="seg-def-dot" style="background:#1D9E75"></span><div class="seg-def-text"><div class="seg-def-name">Thriving</div><div class="seg-def-desc">Score 70+ or 55+ with active workouts</div></div></div>
+    <div class="seg-def"><span class="seg-def-dot" style="background:#c07800"></span><div class="seg-def-text"><div class="seg-def-name">Building</div><div class="seg-def-desc">Trend 3+ with 4+ workouts in 14 days</div></div></div>
+    <div class="seg-def"><span class="seg-def-dot" style="background:#378ADD"></span><div class="seg-def-text"><div class="seg-def-name">Coasting</div><div class="seg-def-desc">Moderate but no strong signal</div></div></div>
+    <div class="seg-def"><span class="seg-def-dot" style="background:#D4537E"></span><div class="seg-def-text"><div class="seg-def-name">Drifting</div><div class="seg-def-desc">Low score/activity or steep decline</div></div></div>
+    <div class="seg-def"><span class="seg-def-dot" style="background:#aaa"></span><div class="seg-def-text"><div class="seg-def-name">Dormant</div><div class="seg-def-desc">Inactive 30+ days, high dropout risk</div></div></div>
   </div>
 
   <div class="section">
