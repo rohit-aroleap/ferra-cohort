@@ -75,7 +75,7 @@
 <!-- Upload Zone -->
 <div id="upload-zone" onclick="document.getElementById('file-input').click()"
      ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
-  <h2>Ferra Cohort Analyzer <span style="font-size:12px;font-weight:400;color:#aaa">v2</span></h2>
+  <h2>Ferra Cohort Analyzer <span id="version-badge" style="font-size:12px;font-weight:400;color:#aaa"></span></h2>
   <p>Upload your users CSV to generate cohort charts.<br>Works with any export from the same format.</p>
   <label class="upload-btn" onclick="event.stopPropagation(); document.getElementById('file-input').click()">
     Choose CSV file
@@ -87,7 +87,7 @@
 <!-- Charts (hidden until CSV loaded) -->
 <div id="charts">
   <div class="header">
-    <h1>Cohort Analysis <span style="font-size:14px;font-weight:400;color:#aaa">v2.1</span></h1>
+    <h1>Cohort Analysis <span id="version-badge-2" style="font-size:14px;font-weight:400;color:#aaa"></span></h1>
     <div class="meta" id="meta-line"></div>
   </div>
 
@@ -117,6 +117,10 @@
 <div id="tooltip"></div>
 
 <script>
+const VERSION = 'v2.001';
+document.getElementById('version-badge').textContent = VERSION;
+document.getElementById('version-badge-2').textContent = VERSION;
+
 const SEG_COLORS = { Thriving:'#1D9E75', Coasting:'#378ADD', Building:'#c07800', Drifting:'#D4537E', Dormant:'#aaa' };
 const SEGS = ['Thriving','Coasting','Building','Drifting','Dormant'];
 const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
