@@ -548,11 +548,15 @@ function getUserMonthStats(uid, year, month) {
   const histEntries = globalHabitHistory[uid] || [];
   const histEntry = histEntries.find(h => h.year === year && h.month === month);
   let endScore = null, startScore = null;
-  if (histEntry && histEntry.dailyScores) {
-    const dates = Object.keys(histEntry.dailyScores).sort();
-    if (dates.length > 0) {
-      endScore = histEntry.dailyScores[dates[dates.length - 1]].score;
-      startScore = histEntry.dailyScores[dates[0]].score;
+  if (histEntry) {
+    // Scores are stored as flattened top-level keys: "dailyScores.YYYY-MM-DD"
+    const scoreDates = Object.keys(histEntry)
+      .filter(k => k.startsWith('dailyScores.'))
+      .map(k => ({ date: k.slice('dailyScores.'.length), val: histEntry[k] }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (scoreDates.length > 0) {
+      endScore = scoreDates[scoreDates.length - 1].val.score;
+      startScore = scoreDates[0].val.score;
     }
   }
   const summEntries = globalMonthlySummaries[uid] || [];
