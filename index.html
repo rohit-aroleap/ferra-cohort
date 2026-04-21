@@ -242,6 +242,7 @@ function processData(rows, cols, uploadDate) {
     const segment = row[cols.segment];
     const memberDays = parseInt(row[cols.memberSince]);
     const uid = cols.uid ? (row[cols.uid] || null) : null;
+    const cancelDate = cols.cancelDate ? (row[cols.cancelDate] || null) : null;
 
     if (isNaN(score) || !segment || isNaN(memberDays)) return;
 
@@ -252,7 +253,7 @@ function processData(rows, cols, uploadDate) {
     const joinMonth = joinDate.getFullYear() + '-' + String(joinDate.getMonth() + 1).padStart(2, '0');
 
     if (!userData[joinMonth]) userData[joinMonth] = [];
-    userData[joinMonth].push({ name, score, segment, uid });
+    userData[joinMonth].push({ name, score, segment, uid, cancelDate });
 
     if (!cohortData[joinMonth]) {
       cohortData[joinMonth] = { n: 0, counts: Object.fromEntries(SEGS.map(s => [s, 0])), pcts: {} };
@@ -319,9 +320,9 @@ function handleFile(file) {
         const cancelledRows = cancelledList.map(u => ({
           '_name': u.name || 'Unknown', '_score': u.habitScore != null ? u.habitScore : 0,
           '_segment': u.segment || 'Unknown User', '_days': u.userAgeDays != null ? u.userAgeDays : 0,
-          '_uid': u.uid || null,
+          '_uid': u.uid || null, '_cancelDate': u.cancellationDate || null,
         }));
-        const cancelledCols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid' };
+        const cancelledCols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid', cancelDate: '_cancelDate' };
         const { userData: cancelledUD } = processData(cancelledRows, cancelledCols, uploadDate);
         globalCancelledUserData = cancelledUD;
       } else {
@@ -687,9 +688,16 @@ function renderCohortEvolution(joinMonth) {
   // For each month, compute segment distribution
   const monthlyDist = months.map(m => {
     const [yr, mo] = m.split('-').map(Number);
+    const monthYM = yr * 100 + mo;
     const counts = Object.fromEntries(SEGS.map(s => [s, 0]));
     let n = 0;
     users.forEach(u => {
+      // Cancelled users: only include them from the month they cancelled onwards
+      if (u.cancelDate) {
+        const cd = new Date(u.cancelDate);
+        const cancelYM = cd.getFullYear() * 100 + (cd.getMonth() + 1);
+        if (cancelYM > monthYM) return;
+      }
       if (!u.uid) return;
       const seg = approxSegmentFromHistory(u.uid, yr, mo);
       if (counts[seg] !== undefined) counts[seg]++;
