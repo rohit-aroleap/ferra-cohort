@@ -165,7 +165,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.005';
+const VERSION = 'v2.007';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -661,13 +661,15 @@ function genMonthRange(from, to) {
 }
 
 // ─── Cohort evolution chart ───────────────────────────────────────────────────
+const CANCEL_COLOR = '#c0392b';
+
 function renderCohortEvolution(joinMonth) {
   const wrap = document.getElementById('evolutionChartWrap');
   const activeUsers    = globalUserData[joinMonth] || [];
   const cancelledUsers = globalCancelledUserData[joinMonth] || [];
-  const users = globalEvolFilter === 'active'    ? activeUsers
-              : globalEvolFilter === 'cancelled' ? cancelledUsers
-              : [...activeUsers, ...cancelledUsers];
+  // Always compute with the full cohort; `globalEvolFilter` only affects which
+  // portions (segments / cancelled cap) are drawn.
+  const users = [...activeUsers, ...cancelledUsers];
   if (!users.length) { wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">No users in this cohort.</p>'; return; }
 
   const hasHistory = Object.keys(globalHabitHistory).length > 0;
@@ -676,7 +678,6 @@ function renderCohortEvolution(joinMonth) {
     return;
   }
 
-  // Ensure canvas is present
   if (!document.getElementById('evolutionChart')) {
     wrap.innerHTML = '<canvas id="evolutionChart"></canvas>';
   }
@@ -685,28 +686,40 @@ function renderCohortEvolution(joinMonth) {
   const endMonth = globalUploadDate.getFullYear() + '-' + String(globalUploadDate.getMonth() + 1).padStart(2, '0');
   const months = genMonthRange(joinMonth, endMonth);
 
-  // For each month, compute segment distribution
+  const cohortSize = users.length;
+
+  // For each month M compute:
+  //   stillActiveStart   = users who were still subscribed at start of M
+  //   cancelledThisMonth = users whose cancel month == M
+  //   counts[seg]        = segment distribution of users still active at end of M
   const monthlyDist = months.map(m => {
     const [yr, mo] = m.split('-').map(Number);
     const monthYM = yr * 100 + mo;
     const counts = Object.fromEntries(SEGS.map(s => [s, 0]));
-    let n = 0;
+    let stillActiveStart = 0;
+    let cancelledThisMonth = 0;
+    let stillActiveEnd = 0;
     users.forEach(u => {
-      // Cancelled users: only include them from the month they cancelled onwards
+      let cancelYM = null;
       if (u.cancelDate) {
         const cd = new Date(u.cancelDate);
-        const cancelYM = cd.getFullYear() * 100 + (cd.getMonth() + 1);
-        if (cancelYM > monthYM) return;
+        cancelYM = cd.getFullYear() * 100 + (cd.getMonth() + 1);
       }
-      if (!u.uid) return;
+      // Skip users who cancelled before this month
+      if (cancelYM !== null && cancelYM < monthYM) return;
+      stillActiveStart++;
+      if (cancelYM === monthYM) { cancelledThisMonth++; return; }
+      // User is still active at end of month — classify
+      stillActiveEnd++;
+      if (!u.uid) { counts['Unknown User']++; return; }
       const seg = approxSegmentFromHistory(u.uid, yr, mo);
       if (counts[seg] !== undefined) counts[seg]++;
-      n++;
+      else counts['Coasting']++;
     });
-    return { month: m, counts, n };
+    return { month: m, counts, stillActiveStart, cancelledThisMonth, stillActiveEnd };
   });
 
-  const BAR_W = 42, GAP = 18, ML = 44, MT = 16, MB = 56, CH = 260;
+  const BAR_W = 42, GAP = 18, ML = 54, MT = 16, MB = 56, CH = 260;
   const totalW = ML + months.length * (BAR_W + GAP) + 20;
   const totalH = CH + MT + MB;
 
@@ -718,25 +731,51 @@ function renderCohortEvolution(joinMonth) {
   const activeSegs = new Set(SEGS);
   let hitZones = [];
 
+  // Nice Y-axis ticks based on cohortSize
+  function niceTicks(maxV) {
+    if (maxV <= 0) return [0, 1];
+    const targets = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
+    let step = targets.find(t => maxV / t <= 5) || Math.pow(10, Math.ceil(Math.log10(maxV / 5)));
+    const top = Math.ceil(maxV / step) * step;
+    const ticks = [];
+    for (let v = 0; v <= top; v += step) ticks.push(v);
+    return ticks;
+  }
+  const ticks = niceTicks(cohortSize);
+  const yMax = ticks[ticks.length - 1];
+  const yOf = v => MT + CH * (1 - v / yMax);
+
   function draw() {
     ctx.clearRect(0, 0, totalW, totalH);
     hitZones = [];
 
+    // Gridlines + Y labels (absolute counts)
     ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'right';
-    [0, 25, 50, 75, 100].forEach(v => {
-      const y = MT + CH * (1 - v / 100);
+    ticks.forEach(v => {
+      const y = yOf(v);
       ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - 8, y); ctx.stroke();
-      ctx.fillStyle = '#999'; ctx.fillText(v + '%', ML - 8, y + 4);
+      ctx.fillStyle = '#999'; ctx.fillText(v, ML - 8, y + 4);
     });
+
+    // Y axis label
+    ctx.save(); ctx.translate(14, MT + CH / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#888';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.fillText('Users in cohort', 0, 0); ctx.restore();
+
+    const showSegs = globalEvolFilter === 'active' || globalEvolFilter === 'both';
+    const showCancel = globalEvolFilter === 'cancelled' || globalEvolFilter === 'both';
 
     monthlyDist.forEach((md, mi) => {
       const x = ML + mi * (BAR_W + GAP);
+
       // Highlight join month
       if (md.month === joinMonth) {
         ctx.fillStyle = 'rgba(29,158,117,0.06)';
         ctx.fillRect(x - 4, MT, BAR_W + 8, CH + 4);
       }
+      // X label
       ctx.save();
       ctx.translate(x + BAR_W / 2, MT + CH + 10); ctx.rotate(Math.PI / 4);
       ctx.textAlign = 'left'; ctx.fillStyle = md.month === joinMonth ? '#1D9E75' : '#888';
@@ -744,35 +783,67 @@ function renderCohortEvolution(joinMonth) {
       ctx.fillText(monthLabel(md.month), 0, 0);
       ctx.restore();
 
-      const activeSorted = SEGS.filter(s => activeSegs.has(s));
-      const total = activeSorted.reduce((sum, s) => sum + md.counts[s], 0);
-      if (!total) return;
+      // Draw segment portion (bottom) — users still active at end of month
+      let yBase = yOf(0); // bottom of chart
+      if (showSegs) {
+        const activeSorted = SEGS.filter(s => activeSegs.has(s));
+        activeSorted.forEach(seg => {
+          const count = md.counts[seg] || 0;
+          if (!count) return;
+          const barH = (CH * count) / yMax;
+          const y = yBase - barH;
+          ctx.fillStyle = SEG_COLORS[seg];
+          ctx.fillRect(x, y, BAR_W, barH);
+          if (barH > 14) {
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 10px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(count, x + BAR_W / 2, y + barH / 2 + 4);
+          }
+          hitZones.push({
+            x, y, w: BAR_W, h: barH,
+            kind: 'seg', seg, count, month: md.month,
+            stillActiveStart: md.stillActiveStart,
+            stillActiveEnd: md.stillActiveEnd,
+            cancelledThisMonth: md.cancelledThisMonth
+          });
+          yBase = y;
+        });
+      }
 
-      let yOff = MT + CH;
-      activeSorted.forEach(seg => {
-        const count = md.counts[seg] || 0;
-        if (!count) return;
-        const pct = count / total * 100;
-        const barH = CH * pct / 100;
-        const y = yOff - barH;
-        ctx.fillStyle = SEG_COLORS[seg];
+      // Draw cancelled-this-month block (top, red)
+      if (showCancel && md.cancelledThisMonth > 0) {
+        const count = md.cancelledThisMonth;
+        const barH = (CH * count) / yMax;
+        // If segments are also shown, stack cancel on top of them.
+        // If only cancel is shown, it sits at the bottom.
+        const stackTop = showSegs ? yBase : yOf(0);
+        const y = stackTop - barH;
+        ctx.fillStyle = CANCEL_COLOR;
         ctx.fillRect(x, y, BAR_W, barH);
-        if (barH > 18) {
+        if (barH > 14) {
           ctx.fillStyle = 'white';
           ctx.font = 'bold 10px -apple-system, sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText(Math.round(pct) + '%', x + BAR_W / 2, y + barH / 2 + 4);
+          ctx.fillText(count, x + BAR_W / 2, y + barH / 2 + 4);
         }
-        hitZones.push({ x, y, w: BAR_W, h: barH, seg, count, pct: pct.toFixed(1), month: md.month, total: md.n });
-        yOff -= barH;
-      });
+        hitZones.push({
+          x, y, w: BAR_W, h: barH,
+          kind: 'cancel', count, month: md.month,
+          stillActiveStart: md.stillActiveStart,
+          stillActiveEnd: md.stillActiveEnd,
+          cancelledThisMonth: md.cancelledThisMonth
+        });
+      }
+
+      // Bottom label: total still-subscribed at start of month
       ctx.textAlign = 'center'; ctx.fillStyle = '#bbb';
       ctx.font = '10px -apple-system, sans-serif';
-      ctx.fillText('n=' + md.n, x + BAR_W / 2, MT + CH + 48);
+      ctx.fillText('n=' + md.stillActiveStart, x + BAR_W / 2, MT + CH + 48);
     });
   }
 
-  canvas.addEventListener('mousemove', e => {
+  canvas.onmousemove = e => {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const found = hitZones.find(z => mx >= z.x && mx <= z.x + z.w && my >= z.y && my <= z.y + z.h);
@@ -780,12 +851,27 @@ function renderCohortEvolution(joinMonth) {
       tooltip.style.display = 'block';
       tooltip.style.left = (e.clientX + 14) + 'px';
       tooltip.style.top = (e.clientY - 10) + 'px';
-      tooltip.innerHTML = `<strong>${found.seg}</strong> · ${found.month}<br>${found.count} of ${found.total} users<br><strong>${found.pct}%</strong> of cohort`;
+      const label = found.kind === 'cancel'
+        ? `<strong style="color:${CANCEL_COLOR}">Cancelled this month</strong>`
+        : `<strong>${found.seg}</strong>`;
+      tooltip.innerHTML =
+        `${label} · ${found.month}<br>` +
+        `<strong>${found.count}</strong> user${found.count === 1 ? '' : 's'}<br>` +
+        `<span style="color:#888">Start of month: ${found.stillActiveStart} · End: ${found.stillActiveEnd} · Cancelled: ${found.cancelledThisMonth}</span>`;
     } else { tooltip.style.display = 'none'; }
-  });
-  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+  };
+  canvas.onmouseleave = () => { tooltip.style.display = 'none'; };
 
   buildLegend('legend-evol', activeSegs, draw);
+  // Append "Cancelled this month" indicator to the legend when relevant
+  if (globalEvolFilter !== 'active') {
+    const el = document.getElementById('legend-evol');
+    const btn = document.createElement('button');
+    btn.className = 'leg-btn';
+    btn.style.cursor = 'default';
+    btn.innerHTML = `<span class="leg-dot" style="background:${CANCEL_COLOR}"></span>Cancelled this month`;
+    el.appendChild(btn);
+  }
   draw();
 }
 
