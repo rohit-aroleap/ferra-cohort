@@ -124,6 +124,17 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Cohort evolution over time</div>
+    <div class="section-sub">Pick a join cohort and see how its segment split changes each subsequent month — reconstructed from individual habit score history.</div>
+    <div style="margin-bottom:14px;">
+      <label style="font-size:13px;color:#555;margin-right:8px;">Join cohort:</label>
+      <select id="cohort-select" style="font-size:13px;padding:5px 10px;border-radius:6px;border:1px solid #ddd;background:white;cursor:pointer;" onchange="renderCohortEvolution(this.value)"></select>
+    </div>
+    <div class="legend" id="legend-evol"></div>
+    <div class="chart-scroll" id="evolutionChartWrap"><canvas id="evolutionChart"></canvas></div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Segment distribution by join cohort</div>
     <div class="section-sub">100% stacked bars — each bar shows % of users in each segment. Hover for exact numbers.</div>
     <div class="legend" id="legend1"></div>
@@ -141,9 +152,15 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.003';
+const VERSION = 'v2.004';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
+
+// ─── Global history data (populated from JSON export) ────────────────────────
+let globalHabitHistory = {};
+let globalMonthlySummaries = {};
+let globalUploadDate = new Date();
+let globalUserData = {};
 
 const SEG_COLORS = { Thriving:'#1D9E75', Coasting:'#378ADD', Building:'#c07800', Drifting:'#D4537E', Dormant:'#aaa', 'Zero Workout':'#e67e22', 'Unknown User':'#7f8c8d' };
 const SEGS = ['Thriving','Building','Coasting','Drifting','Dormant','Zero Workout','Unknown User'];
@@ -209,6 +226,7 @@ function processData(rows, cols, uploadDate) {
     const score = parseFloat(row[cols.habitScore]);
     const segment = row[cols.segment];
     const memberDays = parseInt(row[cols.memberSince]);
+    const uid = cols.uid ? (row[cols.uid] || null) : null;
 
     if (isNaN(score) || !segment || isNaN(memberDays)) return;
 
@@ -219,7 +237,7 @@ function processData(rows, cols, uploadDate) {
     const joinMonth = joinDate.getFullYear() + '-' + String(joinDate.getMonth() + 1).padStart(2, '0');
 
     if (!userData[joinMonth]) userData[joinMonth] = [];
-    userData[joinMonth].push({ name, score, segment });
+    userData[joinMonth].push({ name, score, segment, uid });
 
     if (!cohortData[joinMonth]) {
       cohortData[joinMonth] = { n: 0, counts: Object.fromEntries(SEGS.map(s => [s, 0])), pcts: {} };
@@ -274,9 +292,15 @@ function handleFile(file) {
           '_score': u.habitScore != null ? u.habitScore : 0,
           '_segment': u.segment || 'Unknown User',
           '_days': u.userAgeDays != null ? u.userAgeDays : 0,
+          '_uid': u.uid || null,
         }));
-        cols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days' };
+        cols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid' };
+        // Capture history for cohort evolution
+        globalHabitHistory = parsed.userHabitHistory || {};
+        globalMonthlySummaries = parsed.userMonthlySummaries || {};
       } else {
+        globalHabitHistory = {};
+        globalMonthlySummaries = {};
         rows = parseCSV(text);
         if (!rows.length) { showError('CSV appears to be empty.'); return; }
         cols = detectColumns(Object.keys(rows[0]));
@@ -315,6 +339,9 @@ function handleFile(file) {
       document.getElementById('meta-line').textContent =
         `${totalUsers} users · ${months.length} cohorts · File: ${file.name}`;
 
+      globalUploadDate = uploadDate;
+      globalUserData = userData;
+
       document.getElementById('charts').style.display = 'block';
       renderAll(userData, cohortData, months);
 
@@ -335,6 +362,13 @@ const tooltip = document.getElementById('tooltip');
 function renderAll(userData, cohortData, months) {
   renderHealthChart(userData, cohortData, months);
   renderRiskTable(cohortData, months);
+
+  // Populate cohort evolution dropdown
+  const sel = document.getElementById('cohort-select');
+  sel.innerHTML = months.filter(m => cohortData[m] && cohortData[m].n > 0)
+    .map(m => `<option value="${m}">${monthLabel(m)} (n=${cohortData[m].n})</option>`).join('');
+  if (sel.options.length) renderCohortEvolution(sel.value);
+
   renderStackChart(cohortData, months);
   renderStripChart(userData, months);
 }
@@ -507,6 +541,173 @@ function buildLegend(elId, activeSegs, onToggle) {
     };
     el.appendChild(btn);
   });
+}
+
+// ─── Cohort evolution helpers ─────────────────────────────────────────────────
+function getUserMonthStats(uid, year, month) {
+  const histEntries = globalHabitHistory[uid] || [];
+  const histEntry = histEntries.find(h => h.year === year && h.month === month);
+  let endScore = null, startScore = null;
+  if (histEntry && histEntry.dailyScores) {
+    const dates = Object.keys(histEntry.dailyScores).sort();
+    if (dates.length > 0) {
+      endScore = histEntry.dailyScores[dates[dates.length - 1]].score;
+      startScore = histEntry.dailyScores[dates[0]].score;
+    }
+  }
+  const summEntries = globalMonthlySummaries[uid] || [];
+  const summEntry = summEntries.find(s => s.year === year && s.month === month);
+  let workoutDays = 0;
+  if (summEntry && summEntry.dailyActivity) {
+    workoutDays = Object.values(summEntry.dailyActivity).filter(d => d.exerciseCount > 0).length;
+  }
+  return { endScore, startScore, workoutDays };
+}
+
+function approxSegmentFromHistory(uid, year, month) {
+  const { endScore, startScore, workoutDays } = getUserMonthStats(uid, year, month);
+  let pm = month - 1, py = year;
+  if (pm === 0) { pm = 12; py--; }
+  const prev = getUserMonthStats(uid, py, pm);
+
+  if (endScore === null) return workoutDays === 0 ? 'Unknown User' : 'Coasting';
+  if (workoutDays === 0 && prev.workoutDays === 0) return 'Dormant';
+  if (endScore < 1 && workoutDays === 0) return 'Zero Workout';
+  const trend = endScore - (startScore !== null ? startScore : endScore);
+  if (endScore >= 70) return 'Thriving';
+  if (endScore >= 55 && workoutDays >= 8) return 'Thriving';
+  if (trend >= 3 && workoutDays >= 4) return 'Building';
+  if (endScore < 30 || trend < -5) return 'Drifting';
+  return 'Coasting';
+}
+
+function genMonthRange(from, to) {
+  const months = [];
+  let [sy, sm] = from.split('-').map(Number);
+  const [ey, em] = to.split('-').map(Number);
+  while (sy < ey || (sy === ey && sm <= em)) {
+    months.push(sy + '-' + String(sm).padStart(2, '0'));
+    sm++; if (sm > 12) { sm = 1; sy++; }
+  }
+  return months;
+}
+
+// ─── Cohort evolution chart ───────────────────────────────────────────────────
+function renderCohortEvolution(joinMonth) {
+  const wrap = document.getElementById('evolutionChartWrap');
+  const users = globalUserData[joinMonth] || [];
+  if (!users.length) { wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">No users in this cohort.</p>'; return; }
+
+  const hasHistory = Object.keys(globalHabitHistory).length > 0;
+  if (!hasHistory) {
+    wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">Cohort evolution requires a Ferra JSON export — habit history is not available in CSV uploads.</p>';
+    return;
+  }
+
+  // Ensure canvas is present
+  if (!document.getElementById('evolutionChart')) {
+    wrap.innerHTML = '<canvas id="evolutionChart"></canvas>';
+  }
+
+  // Month range: joinMonth → upload date month
+  const endMonth = globalUploadDate.getFullYear() + '-' + String(globalUploadDate.getMonth() + 1).padStart(2, '0');
+  const months = genMonthRange(joinMonth, endMonth);
+
+  // For each month, compute segment distribution
+  const monthlyDist = months.map(m => {
+    const [yr, mo] = m.split('-').map(Number);
+    const counts = Object.fromEntries(SEGS.map(s => [s, 0]));
+    let n = 0;
+    users.forEach(u => {
+      if (!u.uid) return;
+      const seg = approxSegmentFromHistory(u.uid, yr, mo);
+      if (counts[seg] !== undefined) counts[seg]++;
+      n++;
+    });
+    return { month: m, counts, n };
+  });
+
+  const BAR_W = 42, GAP = 18, ML = 44, MT = 16, MB = 56, CH = 260;
+  const totalW = ML + months.length * (BAR_W + GAP) + 20;
+  const totalH = CH + MT + MB;
+
+  const canvas = document.getElementById('evolutionChart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = totalW; canvas.height = totalH;
+  canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
+
+  const activeSegs = new Set(SEGS);
+  let hitZones = [];
+
+  function draw() {
+    ctx.clearRect(0, 0, totalW, totalH);
+    hitZones = [];
+
+    ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'right';
+    [0, 25, 50, 75, 100].forEach(v => {
+      const y = MT + CH * (1 - v / 100);
+      ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - 8, y); ctx.stroke();
+      ctx.fillStyle = '#999'; ctx.fillText(v + '%', ML - 8, y + 4);
+    });
+
+    monthlyDist.forEach((md, mi) => {
+      const x = ML + mi * (BAR_W + GAP);
+      // Highlight join month
+      if (md.month === joinMonth) {
+        ctx.fillStyle = 'rgba(29,158,117,0.06)';
+        ctx.fillRect(x - 4, MT, BAR_W + 8, CH + 4);
+      }
+      ctx.save();
+      ctx.translate(x + BAR_W / 2, MT + CH + 10); ctx.rotate(Math.PI / 4);
+      ctx.textAlign = 'left'; ctx.fillStyle = md.month === joinMonth ? '#1D9E75' : '#888';
+      ctx.font = (md.month === joinMonth ? 'bold ' : '') + '10px -apple-system, sans-serif';
+      ctx.fillText(monthLabel(md.month), 0, 0);
+      ctx.restore();
+
+      const activeSorted = SEGS.filter(s => activeSegs.has(s));
+      const total = activeSorted.reduce((sum, s) => sum + md.counts[s], 0);
+      if (!total) return;
+
+      let yOff = MT + CH;
+      activeSorted.forEach(seg => {
+        const count = md.counts[seg] || 0;
+        if (!count) return;
+        const pct = count / total * 100;
+        const barH = CH * pct / 100;
+        const y = yOff - barH;
+        ctx.fillStyle = SEG_COLORS[seg];
+        ctx.fillRect(x, y, BAR_W, barH);
+        if (barH > 18) {
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 10px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(Math.round(pct) + '%', x + BAR_W / 2, y + barH / 2 + 4);
+        }
+        hitZones.push({ x, y, w: BAR_W, h: barH, seg, count, pct: pct.toFixed(1), month: md.month, total: md.n });
+        yOff -= barH;
+      });
+      ctx.textAlign = 'center'; ctx.fillStyle = '#bbb';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.fillText('n=' + md.n, x + BAR_W / 2, MT + CH + 48);
+    });
+  }
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const found = hitZones.find(z => mx >= z.x && mx <= z.x + z.w && my >= z.y && my <= z.y + z.h);
+    if (found) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      tooltip.innerHTML = `<strong>${found.seg}</strong> · ${found.month}<br>${found.count} of ${found.total} users<br><strong>${found.pct}%</strong> of cohort`;
+    } else { tooltip.style.display = 'none'; }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+  buildLegend('legend-evol', activeSegs, draw);
+  draw();
 }
 
 // ─── Chart 1: Stacked 100% bar ───────────────────────────────────────────────
