@@ -71,6 +71,14 @@
   .health-bar { display: inline-block; width: 60px; height: 6px; border-radius: 3px; background: #eee; vertical-align: middle; margin-right: 6px; }
   .health-bar-fill { height: 100%; border-radius: 3px; }
 
+  /* Toggle group */
+  .toggle-group { display: flex; gap: 6px; margin-bottom: 14px; }
+  .toggle-btn { padding: 5px 14px; border-radius: 6px; border: 1px solid #ddd; background: white; font-size: 12px; cursor: pointer; color: #555; transition: all 0.15s; }
+  .toggle-btn:hover { background: #f5f5f5; }
+  .toggle-btn.on { background: #1a1a1a; border-color: #1a1a1a; color: white; font-weight: 600; }
+  .toggle-btn.on.cancelled { background: #D4537E; border-color: #D4537E; }
+  .toggle-btn.on.both { background: #378ADD; border-color: #378ADD; }
+
   /* Segment definitions */
   .seg-defs { display: flex; flex-wrap: wrap; gap: 10px; background: white; border-radius: 14px; border: 1px solid #e5e3df; padding: 16px 20px; margin-bottom: 24px; }
   .seg-def { display: flex; align-items: flex-start; gap: 8px; flex: 1 1 160px; min-width: 140px; }
@@ -126,6 +134,11 @@
   <div class="section">
     <div class="section-title">Cohort evolution over time</div>
     <div class="section-sub">Pick a join cohort and see how its segment split changes each subsequent month — reconstructed from individual habit score history.</div>
+    <div class="toggle-group">
+      <button class="toggle-btn on" id="toggle-active" onclick="setEvolFilter('active')">Active</button>
+      <button class="toggle-btn cancelled" id="toggle-cancelled" onclick="setEvolFilter('cancelled')">Cancelled</button>
+      <button class="toggle-btn both" id="toggle-both" onclick="setEvolFilter('both')">Both</button>
+    </div>
     <div style="margin-bottom:14px;">
       <label style="font-size:13px;color:#555;margin-right:8px;">Join cohort:</label>
       <select id="cohort-select" style="font-size:13px;padding:5px 10px;border-radius:6px;border:1px solid #ddd;background:white;cursor:pointer;" onchange="renderCohortEvolution(this.value)"></select>
@@ -161,6 +174,8 @@ let globalHabitHistory = {};
 let globalMonthlySummaries = {};
 let globalUploadDate = new Date();
 let globalUserData = {};
+let globalCancelledUserData = {};
+let globalEvolFilter = 'active';
 
 const SEG_COLORS = { Thriving:'#1D9E75', Coasting:'#378ADD', Building:'#c07800', Drifting:'#D4537E', Dormant:'#aaa', 'Zero Workout':'#e67e22', 'Unknown User':'#7f8c8d' };
 const SEGS = ['Thriving','Building','Coasting','Drifting','Dormant','Zero Workout','Unknown User'];
@@ -298,6 +313,17 @@ function handleFile(file) {
         // Capture history for cohort evolution
         globalHabitHistory = parsed.userHabitHistory || {};
         globalMonthlySummaries = parsed.userMonthlySummaries || {};
+
+        // Process cancelled users into cohorts for evolution chart
+        const cancelledList = parsed.cancelledUsers || [];
+        const cancelledRows = cancelledList.map(u => ({
+          '_name': u.name || 'Unknown', '_score': u.habitScore != null ? u.habitScore : 0,
+          '_segment': u.segment || 'Unknown User', '_days': u.userAgeDays != null ? u.userAgeDays : 0,
+          '_uid': u.uid || null,
+        }));
+        const cancelledCols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid' };
+        const { userData: cancelledUD } = processData(cancelledRows, cancelledCols, uploadDate);
+        globalCancelledUserData = cancelledUD;
       } else {
         globalHabitHistory = {};
         globalMonthlySummaries = {};
@@ -364,9 +390,9 @@ function renderAll(userData, cohortData, months) {
   renderRiskTable(cohortData, months);
 
   // Populate cohort evolution dropdown
+  globalEvolFilter = 'active';
+  updateEvolDropdown(months);
   const sel = document.getElementById('cohort-select');
-  sel.innerHTML = months.filter(m => cohortData[m] && cohortData[m].n > 0)
-    .map(m => `<option value="${m}">${monthLabel(m)} (n=${cohortData[m].n})</option>`).join('');
   if (sel.options.length) renderCohortEvolution(sel.value);
 
   renderStackChart(cohortData, months);
@@ -543,6 +569,43 @@ function buildLegend(elId, activeSegs, onToggle) {
   });
 }
 
+// ─── Cohort evolution filter ──────────────────────────────────────────────────
+let _evolMonths = [];
+
+function updateEvolDropdown(months) {
+  if (months) _evolMonths = months;
+  const activeM = new Set(Object.keys(globalUserData));
+  const cancelledM = new Set(Object.keys(globalCancelledUserData));
+
+  let cohortMonths;
+  if (globalEvolFilter === 'active')    cohortMonths = _evolMonths.filter(m => activeM.has(m));
+  else if (globalEvolFilter === 'cancelled') cohortMonths = _evolMonths.filter(m => cancelledM.has(m));
+  else cohortMonths = _evolMonths.filter(m => activeM.has(m) || cancelledM.has(m));
+
+  const sel = document.getElementById('cohort-select');
+  const prev = sel.value;
+  sel.innerHTML = cohortMonths.map(m => {
+    const an = (globalUserData[m] || []).length;
+    const cn = (globalCancelledUserData[m] || []).length;
+    let label = monthLabel(m);
+    if (globalEvolFilter === 'both') label += ` (${an}A / ${cn}C)`;
+    else if (globalEvolFilter === 'cancelled') label += ` (n=${cn})`;
+    else label += ` (n=${an})`;
+    return `<option value="${m}"${m === prev ? ' selected' : ''}>${label}</option>`;
+  }).join('');
+}
+
+function setEvolFilter(filter) {
+  globalEvolFilter = filter;
+  ['active','cancelled','both'].forEach(f => {
+    const btn = document.getElementById('toggle-' + f);
+    btn.classList.toggle('on', f === filter);
+  });
+  updateEvolDropdown();
+  const sel = document.getElementById('cohort-select');
+  if (sel.options.length) renderCohortEvolution(sel.value);
+}
+
 // ─── Cohort evolution helpers ─────────────────────────────────────────────────
 function getUserMonthStats(uid, year, month) {
   const histEntries = globalHabitHistory[uid] || [];
@@ -599,7 +662,11 @@ function genMonthRange(from, to) {
 // ─── Cohort evolution chart ───────────────────────────────────────────────────
 function renderCohortEvolution(joinMonth) {
   const wrap = document.getElementById('evolutionChartWrap');
-  const users = globalUserData[joinMonth] || [];
+  const activeUsers    = globalUserData[joinMonth] || [];
+  const cancelledUsers = globalCancelledUserData[joinMonth] || [];
+  const users = globalEvolFilter === 'active'    ? activeUsers
+              : globalEvolFilter === 'cancelled' ? cancelledUsers
+              : [...activeUsers, ...cancelledUsers];
   if (!users.length) { wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">No users in this cohort.</p>'; return; }
 
   const hasHistory = Object.keys(globalHabitHistory).length > 0;
