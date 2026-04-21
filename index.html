@@ -86,11 +86,11 @@
 <div id="upload-zone" onclick="document.getElementById('file-input').click()"
      ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
   <h2>Ferra Cohort Analyzer <span id="version-badge" style="font-size:12px;font-weight:400;color:#aaa"></span></h2>
-  <p>Upload your users CSV to generate cohort charts.<br>Works with any export from the same format.</p>
+  <p>Upload a <strong>Ferra JSON export</strong> or a legacy <strong>CSV</strong> to generate cohort charts.</p>
   <label class="upload-btn" onclick="event.stopPropagation(); document.getElementById('file-input').click()">
-    Choose CSV file
+    Choose file
   </label>
-  <input type="file" id="file-input" accept=".csv" onchange="handleFile(this.files[0])">
+  <input type="file" id="file-input" accept=".csv,.json" onchange="handleFile(this.files[0])">
   <div id="upload-status"></div>
 </div>
 
@@ -107,6 +107,8 @@
     <div class="seg-def"><span class="seg-def-dot" style="background:#378ADD"></span><div class="seg-def-text"><div class="seg-def-name">Coasting</div><div class="seg-def-desc">Moderate but no strong signal</div></div></div>
     <div class="seg-def"><span class="seg-def-dot" style="background:#D4537E"></span><div class="seg-def-text"><div class="seg-def-name">Drifting</div><div class="seg-def-desc">Low score/activity or steep decline</div></div></div>
     <div class="seg-def"><span class="seg-def-dot" style="background:#aaa"></span><div class="seg-def-text"><div class="seg-def-name">Dormant</div><div class="seg-def-desc">Inactive 30+ days, high dropout risk</div></div></div>
+    <div class="seg-def"><span class="seg-def-dot" style="background:#e67e22"></span><div class="seg-def-text"><div class="seg-def-name">Zero Workout</div><div class="seg-def-desc">No workouts since subscription start</div></div></div>
+    <div class="seg-def"><span class="seg-def-dot" style="background:#7f8c8d"></span><div class="seg-def-text"><div class="seg-def-name">Unknown User</div><div class="seg-def-desc">UID in subscription but no profile doc</div></div></div>
   </div>
 
   <div class="section">
@@ -143,8 +145,8 @@ const VERSION = 'v2.003';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
-const SEG_COLORS = { Thriving:'#1D9E75', Coasting:'#378ADD', Building:'#c07800', Drifting:'#D4537E', Dormant:'#aaa' };
-const SEGS = ['Thriving','Coasting','Building','Drifting','Dormant'];
+const SEG_COLORS = { Thriving:'#1D9E75', Coasting:'#378ADD', Building:'#c07800', Drifting:'#D4537E', Dormant:'#aaa', 'Zero Workout':'#e67e22', 'Unknown User':'#7f8c8d' };
+const SEGS = ['Thriving','Building','Coasting','Drifting','Dormant','Zero Workout','Unknown User'];
 const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function monthLabel(m) {
@@ -246,30 +248,43 @@ function handleDrop(e) {
 }
 
 function handleFile(file) {
-  if (!file || !file.name.endsWith('.csv')) {
-    showError('Please upload a .csv file.');
-    return;
-  }
+  if (!file) return;
+  const isJSON = file.name.endsWith('.json');
+  const isCSV  = file.name.endsWith('.csv');
+  if (!isJSON && !isCSV) { showError('Please upload a .json or .csv file.'); return; }
+
   const reader = new FileReader();
   reader.onload = e => {
     try {
       const text = e.target.result;
-      const rows = parseCSV(text);
-      if (!rows.length) { showError('CSV appears to be empty.'); return; }
 
-      const cols = detectColumns(Object.keys(rows[0]));
-      const missing = Object.entries(cols).filter(([k, v]) => !v).map(([k]) => k);
-      if (missing.length > 2) {
-        showError(`Could not find columns: ${missing.join(', ')}. Check that your CSV has Habit Score, Segment, Member Since (days), and Name columns.`);
-        return;
-      }
-
-      // Try to detect upload date from filename (e.g. ferra-users-2026-04-11.csv)
-      // Parse components directly to avoid timezone shifting
+      // Detect upload date from filename (e.g. ferra-data-2026-04-11.json)
       let uploadDate = new Date();
       const dateMatch = file.name.match(/(\d{4})-(\d{2})-(\d{2})/);
-      if (dateMatch) {
-        uploadDate = new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]);
+      if (dateMatch) uploadDate = new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]);
+
+      let rows, cols;
+      if (isJSON) {
+        const parsed = JSON.parse(text);
+        // Support Ferra Dashboard JSON export format
+        const userList = parsed.users || [];
+        if (!userList.length) { showError('JSON has no users array or it is empty.'); return; }
+        rows = userList.map(u => ({
+          '_name': u.name || 'Unknown',
+          '_score': u.habitScore != null ? u.habitScore : 0,
+          '_segment': u.segment || 'Unknown User',
+          '_days': u.userAgeDays != null ? u.userAgeDays : 0,
+        }));
+        cols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days' };
+      } else {
+        rows = parseCSV(text);
+        if (!rows.length) { showError('CSV appears to be empty.'); return; }
+        cols = detectColumns(Object.keys(rows[0]));
+        const missing = Object.entries(cols).filter(([k, v]) => !v && k !== 'lastActive').map(([k]) => k);
+        if (missing.length > 2) {
+          showError(`Could not find columns: ${missing.join(', ')}. Check that your CSV has Habit Score, Segment, Member Since (days), and Name columns.`);
+          return;
+        }
       }
 
       const { userData, cohortData } = processData(rows, cols, uploadDate);
@@ -342,7 +357,7 @@ function renderHealthChart(userData, cohortData, months) {
     const users = userData[m] || [];
     const avgScore = users.length ? users.reduce((s, u) => s + u.score, 0) / users.length : null;
     const active = (cd.counts.Thriving || 0) + (cd.counts.Building || 0) + (cd.counts.Coasting || 0);
-    const activePct = cd.n ? active / cd.n * 100 : null;
+    const activePct = cd.n ? (active / cd.n) * 100 : null;
     return { month: m, avgScore, activePct };
   });
 
@@ -442,7 +457,7 @@ function renderRiskTable(cohortData, months) {
     .filter(m => cohortData[m] && cohortData[m].n > 0)
     .map(m => {
       const cd = cohortData[m];
-      const atRiskPct = ((cd.counts.Drifting || 0) + (cd.counts.Dormant || 0)) / cd.n * 100;
+      const atRiskPct = ((cd.counts.Drifting || 0) + (cd.counts.Dormant || 0) + (cd.counts['Zero Workout'] || 0) + (cd.counts['Unknown User'] || 0)) / cd.n * 100;
       const activePct = ((cd.counts.Thriving || 0) + (cd.counts.Building || 0) + (cd.counts.Coasting || 0)) / cd.n * 100;
       return { month: m, n: cd.n, atRiskPct, activePct, counts: cd.counts };
     })
