@@ -148,6 +148,16 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Per-user habit score journey</div>
+    <div class="section-sub">Pick a cohort — one line per user shows how their monthly habit score has changed since joining. Hover a line to highlight it.</div>
+    <div style="margin-bottom:14px;">
+      <label style="font-size:13px;color:#555;margin-right:8px;">Join cohort:</label>
+      <select id="journey-select" style="font-size:13px;padding:5px 10px;border-radius:6px;border:1px solid #ddd;background:white;cursor:pointer;" onchange="renderJourneyChart(this.value)"></select>
+    </div>
+    <div class="chart-scroll" id="journeyChartWrap"><canvas id="journeyChart"></canvas></div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Segment distribution by join cohort</div>
     <div class="section-sub">100% stacked bars — each bar shows % of users in each segment. Hover for exact numbers.</div>
     <div class="legend" id="legend1"></div>
@@ -165,7 +175,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.010';
+const VERSION = 'v2.011';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -398,6 +408,11 @@ function renderAll(userData, cohortData, months) {
   updateEvolDropdown(months);
   const sel = document.getElementById('cohort-select');
   if (sel.options.length) renderCohortEvolution(sel.value);
+
+  // Populate per-user journey dropdown (uses all cohorts with data)
+  updateJourneyDropdown(months);
+  const jSel = document.getElementById('journey-select');
+  if (jSel.options.length) renderJourneyChart(jSel.value);
 
   renderStackChart(cohortData, months);
   renderStripChart(userData, months);
@@ -922,6 +937,222 @@ function renderCohortEvolution(joinMonth) {
     btn.innerHTML = `<span class="leg-dot" style="background:${CANCEL_COLOR}"></span>Cancelled this month`;
     el.appendChild(btn);
   }
+  draw();
+}
+
+// ─── Per-user habit score journey chart ──────────────────────────────────────
+function updateJourneyDropdown(months) {
+  const sel = document.getElementById('journey-select');
+  if (!sel) return;
+  const activeM = globalUserData || {};
+  const cancelledM = globalCancelledUserData || {};
+  const prev = sel.value;
+  const opts = months.filter(m => (activeM[m] || []).length + (cancelledM[m] || []).length > 0);
+  sel.innerHTML = opts.map(m => {
+    const an = (activeM[m] || []).length;
+    const cn = (cancelledM[m] || []).length;
+    return `<option value="${m}"${m === prev ? ' selected' : ''}>${monthLabel(m)} (${an + cn} users)</option>`;
+  }).join('');
+}
+
+function renderJourneyChart(joinMonth) {
+  const wrap = document.getElementById('journeyChartWrap');
+  const activeUsers    = (globalUserData[joinMonth] || []);
+  const cancelledUsers = (globalCancelledUserData[joinMonth] || []);
+  const users = [...activeUsers, ...cancelledUsers];
+  if (!users.length) { wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">No users in this cohort.</p>'; return; }
+
+  const hasHistory = Object.keys(globalHabitHistory).length > 0;
+  if (!hasHistory) {
+    wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">Per-user journey requires a Ferra JSON export — habit history is not available in CSV uploads.</p>';
+    return;
+  }
+
+  if (!document.getElementById('journeyChart')) {
+    wrap.innerHTML = '<canvas id="journeyChart"></canvas>';
+  }
+
+  const endMonth = globalUploadDate.getFullYear() + '-' + String(globalUploadDate.getMonth() + 1).padStart(2, '0');
+  const months = genMonthRange(joinMonth, endMonth);
+
+  // Build one series per user: { name, age, cancelDate, points: [{month, score}], segment }
+  const series = users.map(u => {
+    const pts = [];
+    months.forEach(m => {
+      const [yr, mo] = m.split('-').map(Number);
+      // If user has already cancelled before/in this month, stop the line
+      if (u.cancelDate) {
+        const cd = new Date(u.cancelDate);
+        const cancelYM = cd.getFullYear() * 100 + (cd.getMonth() + 1);
+        const mYM = yr * 100 + mo;
+        if (mYM > cancelYM) return;
+      }
+      if (!u.uid) return;
+      const histEntries = globalHabitHistory[u.uid] || [];
+      const histEntry = histEntries.find(h => h.year === yr && h.month === mo);
+      if (!histEntry) return;
+      const scoreDates = Object.keys(histEntry)
+        .filter(k => k.startsWith('dailyScores.'))
+        .map(k => ({ date: k.slice('dailyScores.'.length), val: histEntry[k] }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+      if (!scoreDates.length) return;
+      const last = scoreDates[scoreDates.length - 1].val.score;
+      pts.push({ month: m, score: last });
+    });
+    return { name: u.name, age: u.age, uid: u.uid, cancelDate: u.cancelDate, segment: u.segment, points: pts };
+  }).filter(s => s.points.length > 0);
+
+  if (!series.length) {
+    wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">No habit-score history found for users in this cohort.</p>';
+    return;
+  }
+
+  const COL_W = 72, ML = 54, MR = 20, MT = 20, MB = 56, CH = 340;
+  const totalW = ML + months.length * COL_W + MR;
+  const totalH = CH + MT + MB;
+
+  const canvas = document.getElementById('journeyChart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = totalW; canvas.height = totalH;
+  canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
+
+  const xOf = mIdx => ML + mIdx * COL_W + COL_W / 2;
+  const yOf = v => MT + CH * (1 - v / 100);
+  const monthIdx = Object.fromEntries(months.map((m, i) => [m, i]));
+
+  // Deterministic color per uid (hash to hue)
+  function hashHue(str) {
+    let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+    return ((h % 360) + 360) % 360;
+  }
+  series.forEach(s => {
+    s.color = `hsl(${hashHue(s.uid || s.name)}, 62%, 48%)`;
+  });
+
+  let hoverIdx = -1;
+  // Precompute segments (pixel pairs) per series for hit-testing
+  function pixelPts(s) {
+    return s.points.map(p => ({ x: xOf(monthIdx[p.month]), y: yOf(p.score), ...p }));
+  }
+  const pixelCache = series.map(pixelPts);
+
+  function draw() {
+    ctx.clearRect(0, 0, totalW, totalH);
+
+    // Gridlines + Y axis
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    [0, 25, 50, 75, 100].forEach(v => {
+      const y = yOf(v);
+      ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - MR + 4, y); ctx.stroke();
+      ctx.fillStyle = '#999'; ctx.fillText(v, ML - 8, y + 4);
+    });
+
+    // Y axis label
+    ctx.save(); ctx.translate(14, MT + CH / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#888';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.fillText('Habit score', 0, 0); ctx.restore();
+
+    // X labels
+    months.forEach((m, i) => {
+      ctx.save();
+      ctx.translate(xOf(i), MT + CH + 10); ctx.rotate(Math.PI / 4);
+      ctx.textAlign = 'left'; ctx.fillStyle = m === joinMonth ? '#1D9E75' : '#888';
+      ctx.font = (m === joinMonth ? 'bold ' : '') + '10px -apple-system, sans-serif';
+      ctx.fillText(monthLabel(m), 0, 0);
+      ctx.restore();
+    });
+
+    // Draw non-hovered lines dim, hovered last
+    pixelCache.forEach((pts, si) => {
+      if (si === hoverIdx) return;
+      const s = series[si];
+      ctx.strokeStyle = hoverIdx >= 0 ? 'rgba(0,0,0,0.08)' : s.color + 'b0';
+      ctx.lineWidth = hoverIdx >= 0 ? 1 : 1.6;
+      ctx.beginPath();
+      pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+      ctx.stroke();
+      // dots
+      ctx.fillStyle = hoverIdx >= 0 ? 'rgba(0,0,0,0.12)' : s.color;
+      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, hoverIdx >= 0 ? 1.8 : 2.5, 0, Math.PI * 2); ctx.fill(); });
+    });
+    if (hoverIdx >= 0) {
+      const s = series[hoverIdx];
+      const pts = pixelCache[hoverIdx];
+      ctx.strokeStyle = s.color; ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+      ctx.stroke();
+      ctx.fillStyle = s.color;
+      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3.8, 0, Math.PI * 2); ctx.fill(); });
+      if (s.cancelDate) {
+        // Mark cancel point with a red X after last point
+        const last = pts[pts.length - 1];
+        ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2;
+        const r = 5;
+        ctx.beginPath(); ctx.moveTo(last.x - r, last.y - r); ctx.lineTo(last.x + r, last.y + r);
+        ctx.moveTo(last.x + r, last.y - r); ctx.lineTo(last.x - r, last.y + r); ctx.stroke();
+      }
+    }
+
+    // Top-right summary
+    ctx.textAlign = 'right'; ctx.fillStyle = '#888';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.fillText(series.length + ' user' + (series.length === 1 ? '' : 's') + ' with history', totalW - MR, MT - 6);
+  }
+
+  function nearestSeries(mx, my) {
+    let best = -1, bestD = 12 * 12;
+    pixelCache.forEach((pts, si) => {
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        const d = (mx - p.x) ** 2 + (my - p.y) ** 2;
+        if (d < bestD) { bestD = d; best = si; }
+        if (i < pts.length - 1) {
+          // distance to segment
+          const a = p, b = pts[i + 1];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const t = Math.max(0, Math.min(1, ((mx - a.x) * dx + (my - a.y) * dy) / (dx * dx + dy * dy || 1)));
+          const px = a.x + t * dx, py = a.y + t * dy;
+          const ds = (mx - px) ** 2 + (my - py) ** 2;
+          if (ds < bestD) { bestD = ds; best = si; }
+        }
+      }
+    });
+    return best;
+  }
+
+  canvas.onmousemove = e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const si = nearestSeries(mx, my);
+    if (si !== hoverIdx) { hoverIdx = si; draw(); }
+    if (si >= 0) {
+      const s = series[si];
+      const pts = s.points;
+      const latest = pts[pts.length - 1];
+      const first = pts[0];
+      const delta = latest.score - first.score;
+      const deltaStr = (delta > 0 ? '+' : '') + delta.toFixed(0);
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      const journey = pts.map(p => `<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#888">${monthLabel(p.month)}</span><span><strong>${p.score}</strong></span></div>`).join('');
+      tooltip.innerHTML =
+        `<strong>${s.name}</strong>` +
+        (s.age != null ? ` <span style="color:#888">(${s.age})</span>` : '') + '<br>' +
+        (s.cancelDate ? `<span style="color:#c0392b">Cancelled</span><br>` : '') +
+        `<span style="color:#888">Joined ${monthLabel(joinMonth)} · ${pts.length} month${pts.length === 1 ? '' : 's'} tracked</span><br>` +
+        `<span style="color:#888">Change: </span><strong style="color:${delta >= 0 ? '#1D9E75' : '#c0392b'}">${deltaStr}</strong>` +
+        `<div style="margin-top:6px;max-height:220px;overflow:auto">${journey}</div>`;
+    } else {
+      tooltip.style.display = 'none';
+    }
+  };
+  canvas.onmouseleave = () => { hoverIdx = -1; tooltip.style.display = 'none'; draw(); };
+
   draw();
 }
 
