@@ -165,7 +165,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.007';
+const VERSION = 'v2.008';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -243,6 +243,7 @@ function processData(rows, cols, uploadDate) {
     const memberDays = parseInt(row[cols.memberSince]);
     const uid = cols.uid ? (row[cols.uid] || null) : null;
     const cancelDate = cols.cancelDate ? (row[cols.cancelDate] || null) : null;
+    const age = cols.age ? (row[cols.age] != null ? row[cols.age] : null) : null;
 
     if (isNaN(score) || !segment || isNaN(memberDays)) return;
 
@@ -253,7 +254,7 @@ function processData(rows, cols, uploadDate) {
     const joinMonth = joinDate.getFullYear() + '-' + String(joinDate.getMonth() + 1).padStart(2, '0');
 
     if (!userData[joinMonth]) userData[joinMonth] = [];
-    userData[joinMonth].push({ name, score, segment, uid, cancelDate });
+    userData[joinMonth].push({ name, score, segment, uid, cancelDate, age, memberDays });
 
     if (!cohortData[joinMonth]) {
       cohortData[joinMonth] = { n: 0, counts: Object.fromEntries(SEGS.map(s => [s, 0])), pcts: {} };
@@ -309,8 +310,9 @@ function handleFile(file) {
           '_segment': u.segment || 'Unknown User',
           '_days': u.userAgeDays != null ? u.userAgeDays : 0,
           '_uid': u.uid || null,
+          '_age': u.age != null ? u.age : null,
         }));
-        cols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid' };
+        cols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid', age: '_age' };
         // Capture history for cohort evolution
         globalHabitHistory = parsed.userHabitHistory || {};
         globalMonthlySummaries = parsed.userMonthlySummaries || {};
@@ -321,8 +323,9 @@ function handleFile(file) {
           '_name': u.name || 'Unknown', '_score': u.habitScore != null ? u.habitScore : 0,
           '_segment': u.segment || 'Unknown User', '_days': u.userAgeDays != null ? u.userAgeDays : 0,
           '_uid': u.uid || null, '_cancelDate': u.cancellationDate || null,
+          '_age': u.age != null ? u.age : null,
         }));
-        const cancelledCols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid', cancelDate: '_cancelDate' };
+        const cancelledCols = { name: '_name', habitScore: '_score', segment: '_segment', memberSince: '_days', uid: '_uid', cancelDate: '_cancelDate', age: '_age' };
         const { userData: cancelledUD } = processData(cancelledRows, cancelledCols, uploadDate);
         globalCancelledUserData = cancelledUD;
       } else {
@@ -1068,7 +1071,9 @@ function renderStripChart(userData, months) {
       tooltip.style.display = 'block';
       tooltip.style.left = (e.clientX + 14) + 'px';
       tooltip.style.top = (e.clientY - 10) + 'px';
-      tooltip.innerHTML = `<strong>${found.name}</strong><br>Score: ${found.score}<br>Segment: ${found.segment}<br>Cohort: ${found.month}`;
+      tooltip.innerHTML = `<strong>${found.name}</strong><br>` +
+        (found.age != null ? `Age: ${found.age}<br>` : '') +
+        `Score: ${found.score}<br>Segment: ${found.segment}<br>Cohort: ${found.month}`;
       canvas.style.cursor = 'pointer';
     } else { tooltip.style.display = 'none'; canvas.style.cursor = 'default'; }
   });
