@@ -165,7 +165,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.009';
+const VERSION = 'v2.010';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -695,9 +695,15 @@ function renderCohortEvolution(joinMonth) {
   //   stillActiveStart   = users who were still subscribed at start of M
   //   cancelledThisMonth = users whose cancel month == M
   //   counts[seg]        = segment distribution of users still active at end of M
+  const [joinYr, joinMo] = joinMonth.split('-').map(Number);
+  const joinYM = joinYr * 100 + joinMo;
+
   const monthlyDist = months.map(m => {
     const [yr, mo] = m.split('-').map(Number);
     const monthYM = yr * 100 + mo;
+    let pMo = mo - 1, pYr = yr;
+    if (pMo === 0) { pMo = 12; pYr--; }
+    const prevYM = pYr * 100 + pMo;
     const counts  = Object.fromEntries(SEGS.map(s => [s, 0]));
     const members = Object.fromEntries(SEGS.map(s => [s, []]));
     const cancelledMembers = [];
@@ -713,9 +719,20 @@ function renderCohortEvolution(joinMonth) {
       // Skip users who cancelled before this month
       if (cancelYM !== null && cancelYM < monthYM) return;
       stillActiveStart++;
+
+      // Previous-month segment (if user existed in the cohort then)
+      let prevSeg = null;
+      if (prevYM < joinYM) {
+        prevSeg = 'New';
+      } else if (u.uid) {
+        prevSeg = approxSegmentFromHistory(u.uid, pYr, pMo);
+      } else {
+        prevSeg = 'Unknown User';
+      }
+
       if (cancelYM === monthYM) {
         cancelledThisMonth++;
-        cancelledMembers.push({ name: u.name, age: u.age });
+        cancelledMembers.push({ name: u.name, age: u.age, prevSeg });
         return;
       }
       // User is still active at end of month — classify
@@ -727,7 +744,7 @@ function renderCohortEvolution(joinMonth) {
         if (counts[seg] === undefined) seg = 'Coasting';
       }
       counts[seg]++;
-      members[seg].push({ name: u.name, age: u.age });
+      members[seg].push({ name: u.name, age: u.age, prevSeg });
     });
     return { month: m, counts, members, cancelledMembers, stillActiveStart, cancelledThisMonth, stillActiveEnd };
   });
@@ -873,9 +890,16 @@ function renderCohortEvolution(joinMonth) {
       const MAX = 20;
       const shown = members.slice(0, MAX);
       const extra = members.length - shown.length;
+      const prevLabel = ps => {
+        if (!ps) return '';
+        const color = ps === 'New' ? '#378ADD' : (SEG_COLORS[ps] || '#888');
+        const same = ps === found.seg;
+        const arrow = same ? '·' : '←';
+        return ` <span style="color:#888">${arrow} <span style="color:${color}">${ps}</span></span>`;
+      };
       const list = shown.length
-        ? `<div style="margin-top:6px;max-height:260px;overflow:auto;font-size:12px;line-height:1.45">` +
-          shown.map(m => `• ${m.name}${m.age != null ? ` <span style="color:#888">(${m.age})</span>` : ''}`).join('<br>') +
+        ? `<div style="margin-top:6px;max-height:260px;overflow:auto;font-size:12px;line-height:1.5">` +
+          shown.map(m => `• ${m.name}${m.age != null ? ` <span style="color:#888">(${m.age})</span>` : ''}${prevLabel(m.prevSeg)}`).join('<br>') +
           (extra > 0 ? `<br><span style="color:#888">…and ${extra} more</span>` : '') +
           `</div>`
         : '';
