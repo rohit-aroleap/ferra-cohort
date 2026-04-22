@@ -184,7 +184,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.012';
+const VERSION = 'v2.013';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -992,40 +992,52 @@ function renderJourneyChart(joinMonth) {
   const endMonth = globalUploadDate.getFullYear() + '-' + String(globalUploadDate.getMonth() + 1).padStart(2, '0');
   const months = genMonthRange(joinMonth, endMonth);
 
-  // Build one series per user: { name, age, cancelDate, points: [{month, score}], segment }
+  // Build one series per user with DAILY resolution.
+  // Each point = { date: 'YYYY-MM-DD', ts: epochMs, score: number }
+  const [jYr, jMo] = joinMonth.split('-').map(Number);
+  const joinMonthStartTs = new Date(jYr, jMo - 1, 1).getTime();
+
   const series = users.map(u => {
-    const pts = [];
-    months.forEach(m => {
-      const [yr, mo] = m.split('-').map(Number);
-      // If user has already cancelled before/in this month, stop the line
-      if (u.cancelDate) {
-        const cd = new Date(u.cancelDate);
-        const cancelYM = cd.getFullYear() * 100 + (cd.getMonth() + 1);
-        const mYM = yr * 100 + mo;
-        if (mYM > cancelYM) return;
-      }
-      if (!u.uid) return;
-      const histEntries = globalHabitHistory[u.uid] || [];
-      const histEntry = histEntries.find(h => h.year === yr && h.month === mo);
-      if (!histEntry) return;
-      const scoreDates = Object.keys(histEntry)
-        .filter(k => k.startsWith('dailyScores.'))
-        .map(k => ({ date: k.slice('dailyScores.'.length), val: histEntry[k] }))
-        .sort((a, b) => a.date.localeCompare(b.date));
-      if (!scoreDates.length) return;
-      const last = scoreDates[scoreDates.length - 1].val.score;
-      pts.push({ month: m, score: last });
+    if (!u.uid) return null;
+    const histEntries = globalHabitHistory[u.uid] || [];
+    const cancelTs = u.cancelDate ? new Date(u.cancelDate).getTime() : null;
+    const all = [];
+    histEntries.forEach(he => {
+      Object.keys(he).forEach(k => {
+        if (!k.startsWith('dailyScores.')) return;
+        const dateStr = k.slice('dailyScores.'.length);
+        // dateStr expected YYYY-MM-DD
+        const [y, mo, d] = dateStr.split('-').map(Number);
+        if (!y || !mo || !d) return;
+        const ts = new Date(y, mo - 1, d).getTime();
+        if (ts < joinMonthStartTs) return;       // drop pre-join history
+        if (cancelTs !== null && ts > cancelTs) return; // drop post-cancel
+        const v = he[k];
+        if (!v || v.score == null) return;
+        all.push({ date: dateStr, ts, score: v.score });
+      });
     });
-    return { name: u.name, age: u.age, uid: u.uid, cancelDate: u.cancelDate, segment: u.segment, points: pts };
-  }).filter(s => s.points.length > 0);
+    all.sort((a, b) => a.ts - b.ts);
+    return { name: u.name, age: u.age, uid: u.uid, cancelDate: u.cancelDate, segment: u.segment, points: all };
+  }).filter(s => s && s.points.length > 0);
 
   if (!series.length) {
     wrap.innerHTML = '<p style="font-size:13px;color:#888;padding:16px 0">No habit-score history found for users in this cohort.</p>';
     return;
   }
 
-  const COL_W = 72, ML = 54, MR = 20, MT = 20, MB = 56, CH = 340;
-  const totalW = ML + months.length * COL_W + MR;
+  // Day-based x-axis. Width scales with #days in range so the chart stays readable.
+  const [eYr, eMo] = endMonth.split('-').map(Number);
+  const endOfEndMonth = new Date(eYr, eMo, 0);           // last day of end month
+  const rangeStartTs = joinMonthStartTs;
+  const rangeEndTs = Math.min(endOfEndMonth.getTime(), globalUploadDate.getTime());
+  const dayMs = 86400000;
+  const nDays = Math.max(1, Math.round((rangeEndTs - rangeStartTs) / dayMs) + 1);
+  const DAY_PX = nDays <= 60 ? 10 : nDays <= 180 ? 5 : nDays <= 365 ? 3 : 2;
+
+  const ML = 54, MR = 20, MT = 20, MB = 56, CH = 340;
+  const plotW = Math.max(420, nDays * DAY_PX);
+  const totalW = ML + plotW + MR;
   const totalH = CH + MT + MB;
 
   const canvas = document.getElementById('journeyChart');
@@ -1033,9 +1045,8 @@ function renderJourneyChart(joinMonth) {
   canvas.width = totalW; canvas.height = totalH;
   canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
 
-  const xOf = mIdx => ML + mIdx * COL_W + COL_W / 2;
+  const xOf = ts => ML + ((ts - rangeStartTs) / dayMs) * DAY_PX;
   const yOf = v => MT + CH * (1 - v / 100);
-  const monthIdx = Object.fromEntries(months.map((m, i) => [m, i]));
 
   // Deterministic color per uid (hash to hue)
   function hashHue(str) {
@@ -1047,9 +1058,9 @@ function renderJourneyChart(joinMonth) {
   });
 
   let hoverIdx = -1;
-  // Precompute segments (pixel pairs) per series for hit-testing
+  // Precompute pixel points per series for hit-testing
   function pixelPts(s) {
-    return s.points.map(p => ({ x: xOf(monthIdx[p.month]), y: yOf(p.score), ...p }));
+    return s.points.map(p => ({ x: xOf(p.ts), y: yOf(p.score), ...p }));
   }
   const pixelCache = series.map(pixelPts);
 
@@ -1072,10 +1083,17 @@ function renderJourneyChart(joinMonth) {
     ctx.font = '11px -apple-system, sans-serif';
     ctx.fillText('Habit score', 0, 0); ctx.restore();
 
-    // X labels
-    months.forEach((m, i) => {
+    // X labels — one tick at the start of each month
+    months.forEach(m => {
+      const [yy, mm] = m.split('-').map(Number);
+      const ts = new Date(yy, mm - 1, 1).getTime();
+      if (ts < rangeStartTs - dayMs || ts > rangeEndTs + dayMs) return;
+      const x = xOf(ts);
+      // vertical month divider
+      ctx.strokeStyle = 'rgba(0,0,0,0.05)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, MT); ctx.lineTo(x, MT + CH); ctx.stroke();
       ctx.save();
-      ctx.translate(xOf(i), MT + CH + 10); ctx.rotate(Math.PI / 4);
+      ctx.translate(x, MT + CH + 10); ctx.rotate(Math.PI / 4);
       ctx.textAlign = 'left'; ctx.fillStyle = m === joinMonth ? '#1D9E75' : '#888';
       ctx.font = (m === joinMonth ? 'bold ' : '') + '10px -apple-system, sans-serif';
       ctx.fillText(monthLabel(m), 0, 0);
@@ -1087,30 +1105,29 @@ function renderJourneyChart(joinMonth) {
     pixelCache.forEach((pts, si) => {
       if (si === hoverIdx) return;
       const s = series[si];
-      let stroke, lw, dotColor, dotR;
+      let stroke, lw;
       if (globalJourneyShowAll) {
-        stroke = s.color + 'cc'; lw = 1.8; dotColor = s.color; dotR = 2.5;
+        stroke = s.color + 'bb'; lw = 1.4;
       } else if (hoverIdx >= 0) {
-        stroke = 'rgba(0,0,0,0.08)'; lw = 1; dotColor = 'rgba(0,0,0,0.12)'; dotR = 1.8;
+        stroke = 'rgba(0,0,0,0.07)'; lw = 1;
       } else {
-        stroke = s.color + 'b0'; lw = 1.6; dotColor = s.color; dotR = 2.5;
+        stroke = s.color + '99'; lw = 1.3;
       }
       ctx.strokeStyle = stroke; ctx.lineWidth = lw;
       ctx.beginPath();
       pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
       ctx.stroke();
-      ctx.fillStyle = dotColor;
-      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2); ctx.fill(); });
     });
     if (hoverIdx >= 0) {
       const s = series[hoverIdx];
       const pts = pixelCache[hoverIdx];
-      ctx.strokeStyle = s.color; ctx.lineWidth = 2.8;
+      ctx.strokeStyle = s.color; ctx.lineWidth = 2.4;
       ctx.beginPath();
       pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
       ctx.stroke();
+      // Light dots only on the highlighted series (daily granularity)
       ctx.fillStyle = s.color;
-      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3.8, 0, Math.PI * 2); ctx.fill(); });
+      pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 1.6, 0, Math.PI * 2); ctx.fill(); });
       if (s.cancelDate) {
         // Mark cancel point with a red X after last point
         const last = pts[pts.length - 1];
@@ -1156,21 +1173,34 @@ function renderJourneyChart(joinMonth) {
     if (si >= 0) {
       const s = series[si];
       const pts = s.points;
-      const latest = pts[pts.length - 1];
-      const first = pts[0];
+      const first = pts[0], latest = pts[pts.length - 1];
       const delta = latest.score - first.score;
       const deltaStr = (delta > 0 ? '+' : '') + delta.toFixed(0);
+      let min = pts[0], max = pts[0];
+      for (const p of pts) { if (p.score < min.score) min = p; if (p.score > max.score) max = p; }
       tooltip.style.display = 'block';
       tooltip.style.left = (e.clientX + 14) + 'px';
       tooltip.style.top = (e.clientY - 10) + 'px';
-      const journey = pts.map(p => `<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#888">${monthLabel(p.month)}</span><span><strong>${p.score}</strong></span></div>`).join('');
+      // nearest point to cursor
+      let near = pts[0], nearD = Infinity;
+      pixelCache[si].forEach(pp => {
+        const d = (mx - pp.x) ** 2 + (my - pp.y) ** 2;
+        if (d < nearD) { nearD = d; near = pp; }
+      });
       tooltip.innerHTML =
         `<strong>${s.name}</strong>` +
         (s.age != null ? ` <span style="color:#888">(${s.age})</span>` : '') + '<br>' +
         (s.cancelDate ? `<span style="color:#c0392b">Cancelled</span><br>` : '') +
-        `<span style="color:#888">Joined ${monthLabel(joinMonth)} · ${pts.length} month${pts.length === 1 ? '' : 's'} tracked</span><br>` +
-        `<span style="color:#888">Change: </span><strong style="color:${delta >= 0 ? '#1D9E75' : '#c0392b'}">${deltaStr}</strong>` +
-        `<div style="margin-top:6px;max-height:220px;overflow:auto">${journey}</div>`;
+        `<span style="color:#888">Joined ${monthLabel(joinMonth)} · ${pts.length} day${pts.length === 1 ? '' : 's'} tracked</span><br>` +
+        `<div style="margin-top:4px;color:#555">` +
+          `<div>On ${near.date}: <strong>${near.score}</strong></div>` +
+          `<div style="color:#888;font-size:11px;margin-top:3px">` +
+            `Start ${first.score} → Latest ${latest.score} ` +
+            `(<span style="color:${delta >= 0 ? '#1D9E75' : '#c0392b'}">${deltaStr}</span>)<br>` +
+            `Peak ${max.score} on ${max.date}<br>` +
+            `Low ${min.score} on ${min.date}` +
+          `</div>` +
+        `</div>`;
     } else {
       tooltip.style.display = 'none';
     }
