@@ -56,7 +56,7 @@
     position: fixed; background: white; border: 1px solid #ccc;
     border-radius: 8px; padding: 8px 12px; font-size: 12px; line-height: 1.7;
     pointer-events: none; display: none; z-index: 100;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.13); max-width: 220px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.13); max-width: 280px;
   }
 
   #charts { display: none; }
@@ -165,7 +165,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.008';
+const VERSION = 'v2.009';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -698,7 +698,9 @@ function renderCohortEvolution(joinMonth) {
   const monthlyDist = months.map(m => {
     const [yr, mo] = m.split('-').map(Number);
     const monthYM = yr * 100 + mo;
-    const counts = Object.fromEntries(SEGS.map(s => [s, 0]));
+    const counts  = Object.fromEntries(SEGS.map(s => [s, 0]));
+    const members = Object.fromEntries(SEGS.map(s => [s, []]));
+    const cancelledMembers = [];
     let stillActiveStart = 0;
     let cancelledThisMonth = 0;
     let stillActiveEnd = 0;
@@ -711,15 +713,23 @@ function renderCohortEvolution(joinMonth) {
       // Skip users who cancelled before this month
       if (cancelYM !== null && cancelYM < monthYM) return;
       stillActiveStart++;
-      if (cancelYM === monthYM) { cancelledThisMonth++; return; }
+      if (cancelYM === monthYM) {
+        cancelledThisMonth++;
+        cancelledMembers.push({ name: u.name, age: u.age });
+        return;
+      }
       // User is still active at end of month — classify
       stillActiveEnd++;
-      if (!u.uid) { counts['Unknown User']++; return; }
-      const seg = approxSegmentFromHistory(u.uid, yr, mo);
-      if (counts[seg] !== undefined) counts[seg]++;
-      else counts['Coasting']++;
+      let seg;
+      if (!u.uid) seg = 'Unknown User';
+      else {
+        seg = approxSegmentFromHistory(u.uid, yr, mo);
+        if (counts[seg] === undefined) seg = 'Coasting';
+      }
+      counts[seg]++;
+      members[seg].push({ name: u.name, age: u.age });
     });
-    return { month: m, counts, stillActiveStart, cancelledThisMonth, stillActiveEnd };
+    return { month: m, counts, members, cancelledMembers, stillActiveStart, cancelledThisMonth, stillActiveEnd };
   });
 
   const BAR_W = 42, GAP = 18, ML = 54, MT = 16, MB = 56, CH = 260;
@@ -806,6 +816,7 @@ function renderCohortEvolution(joinMonth) {
           hitZones.push({
             x, y, w: BAR_W, h: barH,
             kind: 'seg', seg, count, month: md.month,
+            members: md.members[seg] || [],
             stillActiveStart: md.stillActiveStart,
             stillActiveEnd: md.stillActiveEnd,
             cancelledThisMonth: md.cancelledThisMonth
@@ -833,6 +844,7 @@ function renderCohortEvolution(joinMonth) {
         hitZones.push({
           x, y, w: BAR_W, h: barH,
           kind: 'cancel', count, month: md.month,
+          members: md.cancelledMembers || [],
           stillActiveStart: md.stillActiveStart,
           stillActiveEnd: md.stillActiveEnd,
           cancelledThisMonth: md.cancelledThisMonth
@@ -857,10 +869,21 @@ function renderCohortEvolution(joinMonth) {
       const label = found.kind === 'cancel'
         ? `<strong style="color:${CANCEL_COLOR}">Cancelled this month</strong>`
         : `<strong>${found.seg}</strong>`;
+      const members = found.members || [];
+      const MAX = 20;
+      const shown = members.slice(0, MAX);
+      const extra = members.length - shown.length;
+      const list = shown.length
+        ? `<div style="margin-top:6px;max-height:260px;overflow:auto;font-size:12px;line-height:1.45">` +
+          shown.map(m => `• ${m.name}${m.age != null ? ` <span style="color:#888">(${m.age})</span>` : ''}`).join('<br>') +
+          (extra > 0 ? `<br><span style="color:#888">…and ${extra} more</span>` : '') +
+          `</div>`
+        : '';
       tooltip.innerHTML =
         `${label} · ${found.month}<br>` +
         `<strong>${found.count}</strong> user${found.count === 1 ? '' : 's'}<br>` +
-        `<span style="color:#888">Start of month: ${found.stillActiveStart} · End: ${found.stillActiveEnd} · Cancelled: ${found.cancelledThisMonth}</span>`;
+        `<span style="color:#888">Start: ${found.stillActiveStart} · End: ${found.stillActiveEnd} · Cancelled: ${found.cancelledThisMonth}</span>` +
+        list;
     } else { tooltip.style.display = 'none'; }
   };
   canvas.onmouseleave = () => { tooltip.style.display = 'none'; };
