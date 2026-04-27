@@ -204,11 +204,11 @@
                style="width:46px;font-size:13px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;">
       </label>
       <label style="font-size:13px;color:#555;display:inline-flex;align-items:center;gap:6px;cursor:pointer;"
-             title="Excludes users whose peak habit score in their whole journey ever crossed this threshold.">
-        <input type="checkbox" id="alljourney-nopeak" onchange="setAllJourneyNoPeak(this.checked)" style="cursor:pointer;">
-        Hide users who ever crossed
-        <input type="number" id="alljourney-nopeakval" value="75" min="0" max="100" step="1"
-               onchange="setAllJourneyNoPeakVal(this.value)" onclick="event.stopPropagation()"
+             title="Show only users whose peak habit score in their whole journey reached or crossed this threshold.">
+        <input type="checkbox" id="alljourney-peakonly" onchange="setAllJourneyPeakOnly(this.checked)" style="cursor:pointer;">
+        Only users who ever crossed
+        <input type="number" id="alljourney-peakval" value="75" min="0" max="100" step="1"
+               onchange="setAllJourneyPeakVal(this.value)" onclick="event.stopPropagation()"
                style="width:46px;font-size:13px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;">
       </label>
     </div>
@@ -237,7 +237,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.017';
+const VERSION = 'v2.018';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -1340,8 +1340,8 @@ let globalAllJourneySmooth = false;
 let globalAllJourneyHideCancel = false;
 let globalAllJourneyLowOnly = false;
 let globalAllJourneyLowVal = 25;
-let globalAllJourneyNoPeak = false;
-let globalAllJourneyNoPeakVal = 75;
+let globalAllJourneyPeakOnly = false;
+let globalAllJourneyPeakVal = 75;
 let globalAllJourneyActiveSegs = new Set(SEGS);
 let _allJourneyRerender = null;
 
@@ -1354,10 +1354,10 @@ function setAllJourneyLowVal(v)      {
   const n = Number(v); if (!isNaN(n)) globalAllJourneyLowVal = n;
   if (globalAllJourneyLowOnly && _allJourneyRerender) _allJourneyRerender(true);
 }
-function setAllJourneyNoPeak(v)      { globalAllJourneyNoPeak = !!v;  if (_allJourneyRerender) _allJourneyRerender(true); }
-function setAllJourneyNoPeakVal(v)   {
-  const n = Number(v); if (!isNaN(n)) globalAllJourneyNoPeakVal = n;
-  if (globalAllJourneyNoPeak && _allJourneyRerender) _allJourneyRerender(true);
+function setAllJourneyPeakOnly(v)    { globalAllJourneyPeakOnly = !!v; if (_allJourneyRerender) _allJourneyRerender(true); }
+function setAllJourneyPeakVal(v)     {
+  const n = Number(v); if (!isNaN(n)) globalAllJourneyPeakVal = n;
+  if (globalAllJourneyPeakOnly && _allJourneyRerender) _allJourneyRerender(true);
 }
 
 const SEG_RANK = { 'Thriving': 1, 'Building': 2, 'Coasting': 3, 'Drifting': 4, 'Zero Workout': 5, 'Dormant': 6, 'Unknown User': 7 };
@@ -1442,7 +1442,7 @@ function renderAllUsersJourney() {
       if (!globalAllJourneyActiveSegs.has(s.segment)) return false;
       if (globalAllJourneyHideCancel && s.cancelDate) return false;
       if (globalAllJourneyLowOnly && (s.score ?? 0) >= globalAllJourneyLowVal) return false;
-      if (globalAllJourneyNoPeak && s.peakScore >= globalAllJourneyNoPeakVal) return false;
+      if (globalAllJourneyPeakOnly && s.peakScore < globalAllJourneyPeakVal) return false;
       return true;
     });
     if (!filteredSeries.length) {
@@ -1697,10 +1697,10 @@ function renderAllUsersJourney() {
   if (loBox) loBox.checked = globalAllJourneyLowOnly;
   const loVal = document.getElementById('alljourney-lowval');
   if (loVal) loVal.value = globalAllJourneyLowVal;
-  const npBox = document.getElementById('alljourney-nopeak');
-  if (npBox) npBox.checked = globalAllJourneyNoPeak;
-  const npVal = document.getElementById('alljourney-nopeakval');
-  if (npVal) npVal.value = globalAllJourneyNoPeakVal;
+  const pkBox = document.getElementById('alljourney-peakonly');
+  if (pkBox) pkBox.checked = globalAllJourneyPeakOnly;
+  const pkVal = document.getElementById('alljourney-peakval');
+  if (pkVal) pkVal.value = globalAllJourneyPeakVal;
 
   applyFilter();
   renderList();
