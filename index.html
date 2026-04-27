@@ -203,6 +203,14 @@
                onchange="setAllJourneyLowVal(this.value)" onclick="event.stopPropagation()"
                style="width:46px;font-size:13px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;">
       </label>
+      <label style="font-size:13px;color:#555;display:inline-flex;align-items:center;gap:6px;cursor:pointer;"
+             title="Excludes users whose peak habit score in their whole journey ever crossed this threshold.">
+        <input type="checkbox" id="alljourney-nopeak" onchange="setAllJourneyNoPeak(this.checked)" style="cursor:pointer;">
+        Hide users who ever crossed
+        <input type="number" id="alljourney-nopeakval" value="75" min="0" max="100" step="1"
+               onchange="setAllJourneyNoPeakVal(this.value)" onclick="event.stopPropagation()"
+               style="width:46px;font-size:13px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;">
+      </label>
     </div>
     <div class="legend" id="legend-alljourney"></div>
     <div style="display:flex;gap:14px;align-items:flex-start;">
@@ -229,7 +237,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.016';
+const VERSION = 'v2.017';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -1332,6 +1340,8 @@ let globalAllJourneySmooth = false;
 let globalAllJourneyHideCancel = false;
 let globalAllJourneyLowOnly = false;
 let globalAllJourneyLowVal = 25;
+let globalAllJourneyNoPeak = false;
+let globalAllJourneyNoPeakVal = 75;
 let globalAllJourneyActiveSegs = new Set(SEGS);
 let _allJourneyRerender = null;
 
@@ -1343,6 +1353,11 @@ function setAllJourneyLowOnly(v)     { globalAllJourneyLowOnly = !!v;  if (_allJ
 function setAllJourneyLowVal(v)      {
   const n = Number(v); if (!isNaN(n)) globalAllJourneyLowVal = n;
   if (globalAllJourneyLowOnly && _allJourneyRerender) _allJourneyRerender(true);
+}
+function setAllJourneyNoPeak(v)      { globalAllJourneyNoPeak = !!v;  if (_allJourneyRerender) _allJourneyRerender(true); }
+function setAllJourneyNoPeakVal(v)   {
+  const n = Number(v); if (!isNaN(n)) globalAllJourneyNoPeakVal = n;
+  if (globalAllJourneyNoPeak && _allJourneyRerender) _allJourneyRerender(true);
 }
 
 const SEG_RANK = { 'Thriving': 1, 'Building': 2, 'Coasting': 3, 'Drifting': 4, 'Zero Workout': 5, 'Dormant': 6, 'Unknown User': 7 };
@@ -1390,7 +1405,9 @@ function renderAllUsersJourney() {
       });
     });
     pts.sort((a, b) => a.ts - b.ts);
-    return { name: u.name, age: u.age, uid: u.uid, cancelDate: u.cancelDate, segment: u.segment, score: u.score, points: pts };
+    let peak = 0;
+    for (const p of pts) if (p.score > peak) peak = p.score;
+    return { name: u.name, age: u.age, uid: u.uid, cancelDate: u.cancelDate, segment: u.segment, score: u.score, points: pts, peakScore: peak };
   }).filter(s => s && s.points.length > 0);
 
   if (!allSeries.length) {
@@ -1425,6 +1442,7 @@ function renderAllUsersJourney() {
       if (!globalAllJourneyActiveSegs.has(s.segment)) return false;
       if (globalAllJourneyHideCancel && s.cancelDate) return false;
       if (globalAllJourneyLowOnly && (s.score ?? 0) >= globalAllJourneyLowVal) return false;
+      if (globalAllJourneyNoPeak && s.peakScore >= globalAllJourneyNoPeakVal) return false;
       return true;
     });
     if (!filteredSeries.length) {
@@ -1679,6 +1697,10 @@ function renderAllUsersJourney() {
   if (loBox) loBox.checked = globalAllJourneyLowOnly;
   const loVal = document.getElementById('alljourney-lowval');
   if (loVal) loVal.value = globalAllJourneyLowVal;
+  const npBox = document.getElementById('alljourney-nopeak');
+  if (npBox) npBox.checked = globalAllJourneyNoPeak;
+  const npVal = document.getElementById('alljourney-nopeakval');
+  if (npVal) npVal.value = globalAllJourneyNoPeakVal;
 
   applyFilter();
   renderList();
