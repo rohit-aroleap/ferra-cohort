@@ -192,6 +192,17 @@
         <input type="checkbox" id="alljourney-smooth" onchange="setAllJourneySmooth(this.checked)" style="cursor:pointer;">
         Smooth lines
       </label>
+      <label style="font-size:13px;color:#555;display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="alljourney-hidecancel" onchange="setAllJourneyHideCancel(this.checked)" style="cursor:pointer;">
+        Hide cancelled customers
+      </label>
+      <label style="font-size:13px;color:#555;display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="alljourney-lowonly" onchange="setAllJourneyLowOnly(this.checked)" style="cursor:pointer;">
+        Only score &lt;
+        <input type="number" id="alljourney-lowval" value="25" min="0" max="100" step="1"
+               onchange="setAllJourneyLowVal(this.value)" onclick="event.stopPropagation()"
+               style="width:46px;font-size:13px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;">
+      </label>
     </div>
     <div class="legend" id="legend-alljourney"></div>
     <div style="display:flex;gap:14px;align-items:flex-start;">
@@ -218,7 +229,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.015';
+const VERSION = 'v2.016';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -1318,12 +1329,21 @@ function renderJourneyChart(joinMonth) {
 let globalAllJourneySort = 'score-desc';
 let globalAllJourneyShowAll = false;
 let globalAllJourneySmooth = false;
+let globalAllJourneyHideCancel = false;
+let globalAllJourneyLowOnly = false;
+let globalAllJourneyLowVal = 25;
 let globalAllJourneyActiveSegs = new Set(SEGS);
 let _allJourneyRerender = null;
 
-function setAllJourneySort(v)    { globalAllJourneySort = v;    if (_allJourneyRerender) _allJourneyRerender(true); }
-function setAllJourneyShowAll(v) { globalAllJourneyShowAll = !!v; if (_allJourneyRerender) _allJourneyRerender(false); }
-function setAllJourneySmooth(v)  { globalAllJourneySmooth = !!v; if (_allJourneyRerender) _allJourneyRerender(false); }
+function setAllJourneySort(v)        { globalAllJourneySort = v;       if (_allJourneyRerender) _allJourneyRerender(true); }
+function setAllJourneyShowAll(v)     { globalAllJourneyShowAll = !!v;  if (_allJourneyRerender) _allJourneyRerender(false); }
+function setAllJourneySmooth(v)      { globalAllJourneySmooth = !!v;   if (_allJourneyRerender) _allJourneyRerender(false); }
+function setAllJourneyHideCancel(v)  { globalAllJourneyHideCancel = !!v; if (_allJourneyRerender) _allJourneyRerender(true); }
+function setAllJourneyLowOnly(v)     { globalAllJourneyLowOnly = !!v;  if (_allJourneyRerender) _allJourneyRerender(true); }
+function setAllJourneyLowVal(v)      {
+  const n = Number(v); if (!isNaN(n)) globalAllJourneyLowVal = n;
+  if (globalAllJourneyLowOnly && _allJourneyRerender) _allJourneyRerender(true);
+}
 
 const SEG_RANK = { 'Thriving': 1, 'Building': 2, 'Coasting': 3, 'Drifting': 4, 'Zero Workout': 5, 'Dormant': 6, 'Unknown User': 7 };
 
@@ -1401,7 +1421,12 @@ function renderAllUsersJourney() {
   let rangeStartTs, rangeEndTs, totalW, totalH;
 
   function applyFilter() {
-    filteredSeries = allSeries.filter(s => globalAllJourneyActiveSegs.has(s.segment));
+    filteredSeries = allSeries.filter(s => {
+      if (!globalAllJourneyActiveSegs.has(s.segment)) return false;
+      if (globalAllJourneyHideCancel && s.cancelDate) return false;
+      if (globalAllJourneyLowOnly && (s.score ?? 0) >= globalAllJourneyLowVal) return false;
+      return true;
+    });
     if (!filteredSeries.length) {
       rangeStartTs = globalUploadDate.getTime() - 30 * dayMs;
       rangeEndTs = globalUploadDate.getTime();
@@ -1648,6 +1673,12 @@ function renderAllUsersJourney() {
   if (saBox) saBox.checked = globalAllJourneyShowAll;
   const smBox = document.getElementById('alljourney-smooth');
   if (smBox) smBox.checked = globalAllJourneySmooth;
+  const hcBox = document.getElementById('alljourney-hidecancel');
+  if (hcBox) hcBox.checked = globalAllJourneyHideCancel;
+  const loBox = document.getElementById('alljourney-lowonly');
+  if (loBox) loBox.checked = globalAllJourneyLowOnly;
+  const loVal = document.getElementById('alljourney-lowval');
+  if (loVal) loVal.value = globalAllJourneyLowVal;
 
   applyFilter();
   renderList();
