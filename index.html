@@ -211,6 +211,12 @@
                onchange="setAllJourneyPeakVal(this.value)" onclick="event.stopPropagation()"
                style="width:46px;font-size:13px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;">
       </label>
+      <label style="font-size:13px;color:#555;display:inline-flex;align-items:center;gap:6px;">
+        Search:
+        <input type="search" id="alljourney-search" placeholder="name…"
+               oninput="setAllJourneySearch(this.value)"
+               style="width:140px;font-size:13px;padding:3px 7px;border:1px solid #ddd;border-radius:6px;">
+      </label>
     </div>
     <div class="legend" id="legend-alljourney"></div>
     <div style="display:flex;gap:14px;align-items:flex-start;">
@@ -237,7 +243,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.018';
+const VERSION = 'v2.019';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -1342,6 +1348,7 @@ let globalAllJourneyLowOnly = false;
 let globalAllJourneyLowVal = 25;
 let globalAllJourneyPeakOnly = false;
 let globalAllJourneyPeakVal = 75;
+let globalAllJourneySearch = '';
 let globalAllJourneyActiveSegs = new Set(SEGS);
 let _allJourneyRerender = null;
 
@@ -1358,6 +1365,10 @@ function setAllJourneyPeakOnly(v)    { globalAllJourneyPeakOnly = !!v; if (_allJ
 function setAllJourneyPeakVal(v)     {
   const n = Number(v); if (!isNaN(n)) globalAllJourneyPeakVal = n;
   if (globalAllJourneyPeakOnly && _allJourneyRerender) _allJourneyRerender(true);
+}
+function setAllJourneySearch(v)      {
+  globalAllJourneySearch = (v || '').trim().toLowerCase();
+  if (_allJourneyRerender) _allJourneyRerender(true);
 }
 
 const SEG_RANK = { 'Thriving': 1, 'Building': 2, 'Coasting': 3, 'Drifting': 4, 'Zero Workout': 5, 'Dormant': 6, 'Unknown User': 7 };
@@ -1443,6 +1454,7 @@ function renderAllUsersJourney() {
       if (globalAllJourneyHideCancel && s.cancelDate) return false;
       if (globalAllJourneyLowOnly && (s.score ?? 0) >= globalAllJourneyLowVal) return false;
       if (globalAllJourneyPeakOnly && s.peakScore < globalAllJourneyPeakVal) return false;
+      if (globalAllJourneySearch && !(s.name || '').toLowerCase().includes(globalAllJourneySearch)) return false;
       return true;
     });
     if (!filteredSeries.length) {
@@ -1701,6 +1713,8 @@ function renderAllUsersJourney() {
   if (pkBox) pkBox.checked = globalAllJourneyPeakOnly;
   const pkVal = document.getElementById('alljourney-peakval');
   if (pkVal) pkVal.value = globalAllJourneyPeakVal;
+  const sBox = document.getElementById('alljourney-search');
+  if (sBox && document.activeElement !== sBox) sBox.value = globalAllJourneySearch;
 
   applyFilter();
   renderList();
