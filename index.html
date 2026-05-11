@@ -248,7 +248,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.020';
+const VERSION = 'v2.021';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -376,20 +376,57 @@ function handleFile(file) {
   reader.readAsText(file);
 }
 
-async function fetchLiveData() {
+// ─── Local cache (IndexedDB — JSON is ~10MB, too big for localStorage) ───────
+const CACHE_DB = 'ferra-cache', CACHE_STORE = 'data', CACHE_KEY = 'latest';
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function openCacheDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CACHE_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(CACHE_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function readCache() {
+  try {
+    const db = await openCacheDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, 'readonly');
+      const req = tx.objectStore(CACHE_STORE).get(CACHE_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) { return null; }
+}
+async function writeCache(text) {
+  try {
+    const db = await openCacheDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, 'readwrite');
+      tx.objectStore(CACHE_STORE).put({ date: todayStr(), text, savedAt: Date.now() }, CACHE_KEY);
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) { console.warn('Cache write failed:', e); }
+}
+
+async function fetchLiveData(opts) {
+  const silent = opts && opts.silent;
   const btn = document.getElementById('fetch-live-btn');
   const origLabel = btn ? btn.innerHTML : null;
   if (btn) { btn.disabled = true; btn.innerHTML = 'Fetching…'; }
-  document.getElementById('upload-status').innerHTML =
+  if (!silent) document.getElementById('upload-status').innerHTML =
     '<span style="font-size:13px;color:#1D9E75">Fetching live data from Ferra…</span>';
   try {
     const url = 'https://asia-south1-aroleap-fa76f.cloudfunctions.net/exportFerraDashboard?includeExerciseDb=true';
     const resp = await fetch(url, { headers: { 'x-api-key': 'ferra-cust-data-27' } });
     if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ' + resp.statusText);
     const text = await resp.text();
-    const today = new Date();
-    const fname = `ferra-live-${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}.json`;
+    const fname = `ferra-live-${todayStr()}.json`;
     loadFromText(text, fname, true);
+    writeCache(text);  // fire and forget
   } catch (err) {
     showError('Failed to fetch live data: ' + err.message +
       ' (if this is a CORS error, the cloud function needs to allow this origin.)');
@@ -397,6 +434,22 @@ async function fetchLiveData() {
     if (btn) { btn.disabled = false; btn.innerHTML = origLabel; }
   }
 }
+
+// On page load: if we have a cached payload from today, use it; otherwise auto-fetch.
+async function autoLoadOnStart() {
+  const cached = await readCache();
+  if (cached && cached.date === todayStr() && cached.text) {
+    document.getElementById('upload-status').innerHTML =
+      `<span style="font-size:13px;color:#888">Loading cached data from today…</span>`;
+    const fname = `ferra-cached-${cached.date}.json`;
+    try { loadFromText(cached.text, fname, true); } catch (e) { fetchLiveData(); }
+    return;
+  }
+  // No fresh cache — auto-fetch
+  fetchLiveData();
+}
+// Kick off after the script defines loadFromText / renderAll etc.
+setTimeout(autoLoadOnStart, 0);
 
 function loadFromText(text, sourceName, isJSON) {
   try {
