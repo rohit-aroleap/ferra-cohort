@@ -238,6 +238,13 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Segment distribution by join cohort — absolute counts</div>
+    <div class="section-sub">Same data as above but Y-axis is number of users, so taller bars = bigger cohorts. Hover for details.</div>
+    <div class="legend" id="legend1abs"></div>
+    <div class="chart-scroll"><canvas id="stackChartAbs"></canvas></div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Individual habit scores by join cohort</div>
     <div class="section-sub">Each dot = one user plotted at their exact habit score. Hover for details.</div>
     <div class="legend" id="legend2"></div>
@@ -248,7 +255,7 @@
 <div id="tooltip"></div>
 
 <script>
-const VERSION = 'v2.021';
+const VERSION = 'v2.022';
 document.getElementById('version-badge').textContent = VERSION;
 document.getElementById('version-badge-2').textContent = VERSION;
 
@@ -565,6 +572,7 @@ function renderAll(userData, cohortData, months) {
   renderAllUsersJourney();
 
   renderStackChart(cohortData, months);
+  renderStackChartAbsolute(cohortData, months);
   renderStripChart(userData, months);
 }
 
@@ -1903,6 +1911,128 @@ function renderStackChart(cohortData, months) {
   canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
 
   buildLegend('legend1', activeSegs, draw);
+  draw();
+}
+
+// ─── Chart 1b: Stacked absolute-count bars ───────────────────────────────────
+function renderStackChartAbsolute(cohortData, months) {
+  const BAR_W = 36, GAP = 22, ML = 50, MT = 16, MB = 56, CH = 280;
+  const totalW = ML + months.length * (BAR_W + GAP) + 20;
+  const totalH = CH + MT + MB;
+
+  const canvas = document.getElementById('stackChartAbs');
+  const ctx = canvas.getContext('2d');
+  canvas.width = totalW; canvas.height = totalH;
+  canvas.style.width = totalW + 'px'; canvas.style.height = totalH + 'px';
+
+  const activeSegs = new Set(SEGS);
+  let hitZones = [];
+
+  // Nice ticks based on the largest cohort
+  function niceTicks(maxV) {
+    if (maxV <= 0) return [0, 1];
+    const targets = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
+    const step = targets.find(t => maxV / t <= 5) || Math.pow(10, Math.ceil(Math.log10(maxV / 5)));
+    const top = Math.ceil(maxV / step) * step;
+    const ticks = [];
+    for (let v = 0; v <= top; v += step) ticks.push(v);
+    return ticks;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, totalW, totalH);
+    hitZones = [];
+
+    // Recompute y-max from currently-active segments
+    let maxCount = 0;
+    months.forEach(m => {
+      const cd = cohortData[m]; if (!cd) return;
+      let sum = 0; activeSegs.forEach(s => { sum += cd.counts[s] || 0; });
+      if (sum > maxCount) maxCount = sum;
+    });
+    const ticks = niceTicks(maxCount);
+    const yMax = ticks[ticks.length - 1] || 1;
+    const yOf = v => MT + CH * (1 - v / yMax);
+
+    // Gridlines + Y labels
+    ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'right';
+    ticks.forEach(v => {
+      const y = yOf(v);
+      ctx.strokeStyle = 'rgba(0,0,0,0.07)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ML - 4, y); ctx.lineTo(totalW - 8, y); ctx.stroke();
+      ctx.fillStyle = '#999'; ctx.fillText(v, ML - 8, y + 4);
+    });
+
+    // Y axis label
+    ctx.save(); ctx.translate(14, MT + CH / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#888';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.fillText('Users', 0, 0); ctx.restore();
+
+    months.forEach((month, mi) => {
+      const x = ML + mi * (BAR_W + GAP);
+      const cd = cohortData[month];
+
+      ctx.save();
+      ctx.translate(x + BAR_W / 2, MT + CH + 10);
+      ctx.rotate(Math.PI / 4);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = cd ? '#888' : '#ccc';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.fillText(monthLabel(month), 0, 0);
+      ctx.restore();
+
+      if (!cd) {
+        ctx.textAlign = 'center'; ctx.fillStyle = '#ccc';
+        ctx.font = '10px -apple-system, sans-serif';
+        ctx.fillText('n=0', x + BAR_W / 2, MT + CH + 48);
+        return;
+      }
+
+      const activeSorted = SEGS.filter(s => activeSegs.has(s));
+      const totalCount = activeSorted.reduce((sum, s) => sum + (cd.counts[s] || 0), 0);
+      if (!totalCount) return;
+
+      let yBase = yOf(0);
+      activeSorted.forEach(seg => {
+        const count = cd.counts[seg] || 0;
+        if (!count) return;
+        const barH = (CH * count) / yMax;
+        const y = yBase - barH;
+        ctx.fillStyle = SEG_COLORS[seg];
+        ctx.fillRect(x, y, BAR_W, barH);
+        if (barH > 14) {
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 10px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(count, x + BAR_W / 2, y + barH / 2 + 4);
+        }
+        const pct = totalCount ? (count / totalCount * 100).toFixed(1) : '0';
+        hitZones.push({ x, y, w: BAR_W, h: barH, seg, count, pct, month, total: cd.n });
+        yBase = y;
+      });
+
+      // n= label below bar
+      ctx.textAlign = 'center'; ctx.fillStyle = '#bbb';
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.fillText('n=' + cd.n, x + BAR_W / 2, MT + CH + 48);
+    });
+  }
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const found = hitZones.find(z => mx >= z.x && mx <= z.x + z.w && my >= z.y && my <= z.y + z.h);
+    if (found) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      tooltip.innerHTML = `<strong>${found.seg}</strong> · ${found.month}<br><strong>${found.count}</strong> of ${found.total} users<br>${found.pct}% of cohort`;
+    } else { tooltip.style.display = 'none'; }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+  buildLegend('legend1abs', activeSegs, draw);
   draw();
 }
 
